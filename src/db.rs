@@ -45,6 +45,10 @@ impl VectorDatabase {
             .connect(database_uri.as_str())
             .await?;
 
+        // Initialize pg_embedding extension
+        pool.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            .await?;
+
         // Create Tables
         log::debug!("creating tables in database");
         pool.execute(
@@ -75,6 +79,7 @@ impl VectorDatabase {
                 file_id INT,
                 start_byte INT NOT NULL,
                 end_byte INT NOT NULL,
+                embedding vector,
                 CONSTRAINT fk_file
                     FOREIGN KEY(file_id)
                         REFERENCES file(id)
