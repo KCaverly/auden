@@ -3,16 +3,20 @@ use std::time::Duration;
 use pg_embed::pg_enums::PgAuthMethod;
 use pg_embed::pg_fetch::{PgFetchSettings, PG_V15};
 use pg_embed::postgres::{PgEmbed, PgSettings};
+use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::Executor;
+use sqlx::{Connection, Executor, Pool, Postgres};
 use std::path::PathBuf;
 
 const DATABASE_NAME: &str = "syntax_surfer";
 
-pub(crate) struct VectorDatabase {}
+pub(crate) struct VectorDatabase {
+    postgres_handle: PgEmbed,
+    pool: Pool<Postgres>,
+}
 
 impl VectorDatabase {
-    pub(crate) async fn initialize(database_dir: PathBuf) -> anyhow::Result<()> {
+    pub(crate) async fn initialize(database_dir: PathBuf) -> anyhow::Result<VectorDatabase> {
         log::debug!("initializing database at {:?}", database_dir);
         let pg_settings = PgSettings {
             database_dir,
@@ -33,7 +37,12 @@ impl VectorDatabase {
         let mut pg = PgEmbed::new(pg_settings, fetch_settings).await?;
         pg.setup().await?;
         pg.start_db().await?;
+        // Currently, I am just dropping the database on each run
+        // this is not ideal
         if !pg.database_exists(DATABASE_NAME).await? {
+            pg.create_database(DATABASE_NAME).await?;
+        } else {
+            pg.drop_database(DATABASE_NAME).await?;
             pg.create_database(DATABASE_NAME).await?;
         }
         let database_uri = pg.full_db_uri(DATABASE_NAME);
@@ -54,7 +63,7 @@ impl VectorDatabase {
         pool.execute(
             "
                 CREATE TABLE IF NOT EXISTS directory (
-                    id INT PRIMARY KEY,
+                    id SERIAL PRIMARY KEY,
                     path VARCHAR(255) NOT NULL
                 )",
         )
@@ -63,7 +72,7 @@ impl VectorDatabase {
         pool.execute(
             "
             CREATE TABLE IF NOT EXISTS file (
-                id INT PRIMARY KEY,
+                id SERIAL PRIMARY KEY,
                 directory_id INT,
                 path VARCHAR(255) NOT NULL,
                 CONSTRAINT fk_directory
@@ -75,7 +84,7 @@ impl VectorDatabase {
 
         pool.execute(
             "CREATE TABLE IF NOT EXISTS spans (
-                id INT PRIMARY KEY,
+                id SERIAL PRIMARY KEY,
                 file_id INT,
                 start_byte INT NOT NULL,
                 end_byte INT NOT NULL,
@@ -89,6 +98,29 @@ impl VectorDatabase {
 
         log::debug!("tables created appropriately in database");
 
-        anyhow::Ok(())
+        anyhow::Ok(VectorDatabase {
+            postgres_handle: pg,
+            pool,
+        })
+    }
+
+    pub(crate) async fn get_conn(&self) -> anyhow::Result<PoolConnection<Postgres>> {
+        log::debug!("acquiring connection to database");
+        anyhow::Ok(self.pool.acquire().await?)
+    }
+
+    pub(crate) async fn upsert_directory(&self, path: PathBuf) -> anyhow::Result<usize> {
+        self.get_conn()
+            .await?
+            .execute(
+                format!(
+                    "INSERT INTO directory (path) VALUES ('{}') RETURNING id",
+                    path.as_path().to_string_lossy()
+                )
+                .as_str(),
+            )
+            .await?;
+
+        anyhow::Ok(1)
     }
 }

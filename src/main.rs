@@ -10,7 +10,12 @@ async fn main() {
     // For now, lets just panic if the Vector Database is not initialized properly
     let db = VectorDatabase::initialize(PathBuf::from("data/db")).await;
     match db {
-        Ok(_) => {}
+        Ok(db) => {
+            let result = db
+                .upsert_directory(PathBuf::from("/home/kcaverly/personal/blang"))
+                .await
+                .unwrap();
+        }
         Err(err) => {
             panic!("{:?}", err);
         }
