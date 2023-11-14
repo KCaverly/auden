@@ -12,7 +12,7 @@ async fn main() {
     match db {
         Ok(db) => {
             let result = db
-                .upsert_directory(PathBuf::from("/home/kcaverly/personal/blang"))
+                .get_or_create_directory(PathBuf::from("/home/kcaverly/personal/blang"))
                 .await
                 .unwrap();
         }

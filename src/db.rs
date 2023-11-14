@@ -5,7 +5,7 @@ use pg_embed::pg_fetch::{PgFetchSettings, PG_V15};
 use pg_embed::postgres::{PgEmbed, PgSettings};
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Connection, Executor, Pool, Postgres};
+use sqlx::{Connection, Executor, Pool, Postgres, Row};
 use std::path::PathBuf;
 
 const DATABASE_NAME: &str = "syntax_surfer";
@@ -105,22 +105,38 @@ impl VectorDatabase {
     }
 
     pub(crate) async fn get_conn(&self) -> anyhow::Result<PoolConnection<Postgres>> {
-        log::debug!("acquiring connection to database");
         anyhow::Ok(self.pool.acquire().await?)
     }
 
-    pub(crate) async fn upsert_directory(&self, path: PathBuf) -> anyhow::Result<usize> {
-        self.get_conn()
-            .await?
-            .execute(
-                format!(
-                    "INSERT INTO directory (path) VALUES ('{}') RETURNING id",
-                    path.as_path().to_string_lossy()
-                )
-                .as_str(),
-            )
-            .await?;
+    pub(crate) async fn get_or_create_directory(&self, path: PathBuf) -> anyhow::Result<usize> {
+        let pool = self.pool.clone();
+        let path_str = path.as_path().to_string_lossy();
 
-        anyhow::Ok(1)
+        // Identify if the directory already exists
+
+        let account_id =
+            sqlx::query(format!("SELECT id FROM directory WHERE path = '{}'", path_str).as_str())
+                .fetch_one(&pool)
+                .await;
+
+        match account_id {
+            Ok(account_id) => {
+                return anyhow::Ok(account_id.get::<i32, _>(0) as usize);
+            }
+            Err(_) => {
+                let r = self
+                    .get_conn()
+                    .await?
+                    .fetch_one(
+                        format!(
+                            "INSERT INTO directory (path) VALUES ('{}') RETURNING id",
+                            path_str
+                        )
+                        .as_str(),
+                    )
+                    .await?;
+                return anyhow::Ok(r.get::<i32, _>(0) as usize);
+            }
+        }
     }
 }
