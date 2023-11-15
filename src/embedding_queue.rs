@@ -3,7 +3,7 @@ use crate::parsing::FileContext;
 use std::mem;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 
 pub(crate) enum EmbeddingJob {
     Embed {
@@ -12,85 +12,75 @@ pub(crate) enum EmbeddingJob {
     Flush,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FileFragment {
     file_context: Arc<Mutex<FileContext>>,
     start_idx: usize,
     end_idx: usize,
 }
 
+#[derive(Clone)]
 pub(crate) struct EmbeddingQueue {
     queue: Vec<FileFragment>,
-    embed_tx: mpsc::Sender<(Vec<String>, oneshot::Sender<Vec<Embedding>>)>,
-    finished_files_tx: mpsc::Sender<Arc<Mutex<FileContext>>>,
-    pub(crate) finished_files_rx: mpsc::Receiver<Arc<Mutex<FileContext>>>,
+    embed_tx: mpsc::Sender<Vec<FileFragment>>,
+    finished_files_tx: broadcast::Sender<Arc<Mutex<FileContext>>>,
 }
 
 impl EmbeddingQueue {
     pub(crate) fn new(provider: Box<dyn EmbeddingProvider>) -> Self {
-        // Create a Task Which is just embedding the spans it receives
-        let (embed_tx, mut receiver) =
-            mpsc::channel::<(Vec<String>, oneshot::Sender<Vec<Embedding>>)>(10000);
-        tokio::spawn(async move {
-            while let Some((spans, embedding_sender)) = receiver.recv().await {
-                let embeddings = provider.embed(spans);
-                println!("SENDING BACK!");
-                let _ = embedding_sender.send(embeddings);
+        let (finished_files_tx, _) = broadcast::channel::<Arc<Mutex<FileContext>>>(10000);
+
+        // Create a long lived task to embed and send off completed files
+        let (embed_tx, mut receiver) = mpsc::channel::<Vec<FileFragment>>(10000);
+        tokio::spawn({
+            let finished_files_tx = finished_files_tx.clone();
+            async move {
+                // get spans and embed them
+                while let Some(queue) = receiver.recv().await {
+                    let mut spans = Vec::new();
+                    for fragment in &queue {
+                        let unlocked = fragment.file_context.lock().await;
+                        for idx in fragment.start_idx..fragment.end_idx {
+                            spans.push(unlocked.documents[idx].content.clone());
+                        }
+                    }
+
+                    let embeddings = provider.embed(spans);
+
+                    // Update File Context with Completed Embeddings
+                    let mut i = 0;
+                    for fragment in &queue {
+                        let mut unlocked = fragment.file_context.lock().await;
+                        for idx in fragment.start_idx..(fragment.end_idx + 1) {
+                            unlocked.embeddings[idx] = embeddings[i].clone();
+                        }
+                        i += 1;
+
+                        if unlocked.complete() {
+                            let _ = finished_files_tx.send(fragment.file_context.clone());
+                        }
+                    }
+                }
             }
         });
-
-        let (finished_files_tx, finished_files_rx) =
-            mpsc::channel::<Arc<Mutex<FileContext>>>(10000);
 
         EmbeddingQueue {
             queue: Vec::new(),
             embed_tx,
-            finished_files_rx,
             finished_files_tx,
         }
     }
 
     pub(crate) async fn flush_queue(&mut self) {
         log::debug!("flushing queue");
-        // For each file context, we would be expected to send start idx -> end idx to the
-        // embedding engine
-
-        let mut spans = Vec::new();
         let queue = mem::take(&mut self.queue);
-        for fragment in &queue {
-            let unlocked = fragment.file_context.lock().await;
-            for idx in fragment.start_idx..fragment.end_idx {
-                spans.push(unlocked.documents[idx].content.clone());
-            }
-        }
+        let _ = self.embed_tx.send(queue).await;
+    }
 
-        let (sender, receiver) = oneshot::channel();
-        let _ = self.embed_tx.send((spans, sender)).await;
-
-        // Keeping this in the exact same, code path and awaiting it like this,
-        // Likely leaves this code, running syncronously, as we dont move on to
-        // other work, until new embeddings are sent back
-        // I think we should move this into the embeddin channel itself
-        // maybe the channel, grabs the spawn from the queue, updates the file_context objects
-        // and checks if its complete if its complete, it then sends it to the finished_files
-        // channel
-        if let Some(embeddings) = receiver.await.ok() {
-            let mut i = 0;
-            for fragment in &queue {
-                let mut unlocked = fragment.file_context.lock().await;
-                for idx in fragment.start_idx..(fragment.end_idx + 1) {
-                    unlocked.embeddings[idx] = embeddings[i].clone();
-                }
-                i += 1;
-
-                if unlocked.complete() {
-                    let _ = self
-                        .finished_files_tx
-                        .send(fragment.file_context.clone())
-                        .await;
-                }
-            }
-        }
+    pub(crate) async fn finished_files_rx(
+        &mut self,
+    ) -> tokio::sync::broadcast::Receiver<Arc<Mutex<FileContext>>> {
+        self.finished_files_tx.subscribe()
     }
 
     fn queue_size(&self) -> usize {

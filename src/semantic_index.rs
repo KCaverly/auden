@@ -38,10 +38,11 @@ impl SemanticIndex {
 
         // Create a long-lived background task, which queues files for embedding
         let mut embedding_queue = EmbeddingQueue::new(Box::new(DummyEmbeddingProvider {}));
+        let mut long_lived_embedding_queue = embedding_queue.clone(); // I dont really like this
         tokio::spawn(async move {
             let mut new_values = false;
             loop {
-                match tokio::time::timeout(Duration::from_millis(25), embedding_receiver.recv())
+                match tokio::time::timeout(Duration::from_millis(250), embedding_receiver.recv())
                     .await
                 {
                     Ok(embedding_job) => {
@@ -57,6 +58,18 @@ impl SemanticIndex {
                         }
                     }
                 }
+            }
+        });
+
+        // Create a long-lived background task, which gets finished files and writes them to the
+        // database
+        let mut finished_files_rx = long_lived_embedding_queue.finished_files_rx().await;
+        tokio::spawn(async move {
+            while let Some(finished_file) = finished_files_rx.recv().await.ok() {
+                log::debug!(
+                    "received finished file: {:?}",
+                    finished_file.lock().await.path
+                );
             }
         });
 

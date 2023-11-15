@@ -16,5 +16,7 @@ async fn main() {
         let _ = index
             .index_directory(PathBuf::from("/home/kcaverly/personal/blang"))
             .await;
+
+        loop {}
     }
 }
