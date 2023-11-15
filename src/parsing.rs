@@ -30,6 +30,12 @@ impl FileContext {
     }
 }
 
+impl Drop for FileContext {
+    fn drop(&mut self) {
+        self.details.directory_state.job_dropped();
+    }
+}
+
 pub(crate) struct FileContextParser {}
 
 // Can this just be completely functional?

@@ -16,29 +16,42 @@ use self::embedding::DummyEmbeddingProvider;
 async fn main() {
     simple_logger::init_with_env().unwrap();
 
-    if let Some(index) = SemanticIndex::new(
+    if let Some(mut index) = SemanticIndex::new(
         PathBuf::from("data/db"),
         Arc::new(DummyEmbeddingProvider {}),
     )
     .await
     .ok()
     {
-        let _ = index
+        if let Some(indexing) = index
             .index_directory(PathBuf::from("/home/kcaverly/personal/blang"))
-            .await;
+            .await
+            .ok()
+        {
+            sleep(Duration::from_secs(1)).await;
+            let status = index
+                .get_status(PathBuf::from("/home/kcaverly/personal/blang"))
+                .await;
+            log::debug!("STATUS: {:?}", status);
 
-        sleep(Duration::from_secs(10)).await;
-        println!("SEARCHING...");
+            indexing.notified().await;
+            log::debug!("indexing complete!");
 
-        let results = index
-            .search_directory(
-                PathBuf::from("/home/kcaverly/personal/blang"),
-                10,
-                "This is a test query",
-            )
-            .await;
+            let status = index
+                .get_status(PathBuf::from("/home/kcaverly/personal/blang"))
+                .await;
+            log::debug!("STATUS: {:?}", status);
 
-        println!("RESULTS: {:?}", results);
+            let results = index
+                .search_directory(
+                    PathBuf::from("/home/kcaverly/personal/blang"),
+                    10,
+                    "This is a test query",
+                )
+                .await;
+
+            println!("RESULTS: {:?}", results);
+        };
 
         loop {}
     }

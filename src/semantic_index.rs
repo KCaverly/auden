@@ -4,16 +4,70 @@ use crate::embedding_queue::{EmbeddingJob, EmbeddingQueue};
 use crate::languages::{load_languages, LanguageConfig, LanguageRegistry};
 use crate::parsing::FileContextParser;
 use anyhow::anyhow;
+use std::borrow::BorrowMut;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex, Notify};
 use tokio::time::Duration;
 use walkdir::{DirEntry, WalkDir};
 
 #[derive(Debug, Clone)]
 pub(crate) struct FileDetails {
     pub(crate) path: PathBuf,
-    pub(crate) directory_id: usize,
+    pub(crate) directory_state: Arc<DirectoryState>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DirectoryState {
+    pub(crate) id: usize,
+    pub(crate) job_count_tx: watch::Sender<usize>,
+    pub(crate) job_count_rx: watch::Receiver<usize>,
+    pub(crate) notify: Arc<Notify>,
+}
+
+impl DirectoryState {
+    pub fn new(id: usize) -> Self {
+        let (job_count_tx, job_count_rx) = watch::channel::<usize>(0);
+        let notify = Arc::new(Notify::new());
+        DirectoryState {
+            id,
+            job_count_tx,
+            job_count_rx,
+            notify,
+        }
+    }
+
+    pub fn new_job(&self) {
+        let current_count = self.job_count_rx.borrow().clone();
+        self.job_count_tx.send_replace(current_count + 1);
+    }
+
+    pub fn job_dropped(&self) {
+        let current_count = self.job_count_rx.borrow().clone();
+        let new_count = current_count - 1;
+        self.job_count_tx.send_replace(new_count);
+
+        if new_count == 0 {
+            self.notify.notify_one();
+        }
+    }
+
+    pub fn status(&self) -> IndexingStatus {
+        let jobs_outstanding = self.job_count_rx.borrow().clone();
+        if jobs_outstanding == 0 {
+            IndexingStatus::Indexed
+        } else {
+            IndexingStatus::Indexing { jobs_outstanding }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum IndexingStatus {
+    Indexing { jobs_outstanding: usize },
+    Indexed,
+    NotIndexed,
 }
 
 pub(crate) struct SemanticIndex {
@@ -21,6 +75,7 @@ pub(crate) struct SemanticIndex {
     languages: LanguageRegistry,
     parse_sender: mpsc::Sender<Arc<(FileDetails, LanguageConfig)>>,
     embedding_provider: Arc<dyn EmbeddingProvider>,
+    directory_state: HashMap<PathBuf, Arc<DirectoryState>>,
 }
 
 impl SemanticIndex {
@@ -38,6 +93,8 @@ impl SemanticIndex {
                 if let Ok(context) =
                     FileContextParser::parse_file(&file_to_parse.0, &file_to_parse.1)
                 {
+                    context.details.directory_state.new_job();
+
                     let _ = embedding_sender
                         .send(EmbeddingJob::Embed {
                             file_context: Arc::new(Mutex::new(context)),
@@ -95,10 +152,15 @@ impl SemanticIndex {
             languages,
             parse_sender,
             embedding_provider,
+            directory_state: HashMap::new(),
         })
     }
 
-    async fn walk_directory(&self, directory_id: usize, directory: PathBuf) -> anyhow::Result<()> {
+    async fn walk_directory(
+        &self,
+        directory_state: Arc<DirectoryState>,
+        directory: PathBuf,
+    ) -> anyhow::Result<()> {
         fn is_hidden(entry: &DirEntry) -> bool {
             entry
                 .file_name()
@@ -126,7 +188,7 @@ impl SemanticIndex {
                         if let Some(config) = self.languages.get_config_from_extension(extension) {
                             let file_details = FileDetails {
                                 path: path.to_path_buf(),
-                                directory_id: directory_id.clone(),
+                                directory_state: directory_state.clone(),
                             };
                             self.parse_sender
                                 .send(Arc::new((file_details, config.clone())))
@@ -140,12 +202,23 @@ impl SemanticIndex {
         anyhow::Ok(())
     }
 
-    pub(crate) async fn index_directory(&self, directory: PathBuf) -> anyhow::Result<()> {
+    pub(crate) async fn index_directory(
+        &mut self,
+        directory: PathBuf,
+    ) -> anyhow::Result<Arc<Notify>> {
         // Get or Create Directory Item in Vector Database
         let directory_id = self.vector_db.get_or_create_directory(&directory).await?;
+        let directory_state = Arc::new(DirectoryState::new(directory_id));
 
-        let _ = self.walk_directory(directory_id, directory).await?;
-        anyhow::Ok(())
+        // TODO: Make this work for concurrent index calls
+        self.directory_state
+            .insert(directory.clone(), directory_state.clone());
+
+        let _ = self
+            .walk_directory(directory_state.clone(), directory)
+            .await?;
+
+        anyhow::Ok(directory_state.notify.clone())
     }
 
     pub(crate) async fn search_directory(
@@ -164,6 +237,14 @@ impl SemanticIndex {
                 .await
         } else {
             Err(anyhow!("embedding provider failed to embed search query"))
+        }
+    }
+
+    pub(crate) async fn get_status(&self, directory: PathBuf) -> IndexingStatus {
+        if let Some(directory_state) = self.directory_state.get(&directory) {
+            directory_state.status()
+        } else {
+            IndexingStatus::NotIndexed
         }
     }
 }

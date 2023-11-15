@@ -133,7 +133,7 @@ impl VectorDatabase {
                             let file_id = VectorDatabase::get_or_create_file(
                                 &pool,
                                 &file_context.details.path,
-                                file_context.details.directory_id,
+                                file_context.details.directory_state.id,
                             )
                             .await;
 
