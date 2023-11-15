@@ -1,23 +1,20 @@
 mod db;
+mod embedding;
+mod embedding_queue;
+mod languages;
+mod parsing;
+mod semantic_index;
 
-use crate::db::VectorDatabase;
+use crate::semantic_index::SemanticIndex;
 use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() {
     simple_logger::init_with_env().unwrap();
 
-    // For now, lets just panic if the Vector Database is not initialized properly
-    let db = VectorDatabase::initialize(PathBuf::from("data/db")).await;
-    match db {
-        Ok(db) => {
-            let result = db
-                .get_or_create_directory(PathBuf::from("/home/kcaverly/personal/blang"))
-                .await
-                .unwrap();
-        }
-        Err(err) => {
-            panic!("{:?}", err);
-        }
+    if let Some(index) = SemanticIndex::new(PathBuf::from("data/db")).await.ok() {
+        let _ = index
+            .index_directory(PathBuf::from("/home/kcaverly/personal/blang"))
+            .await;
     }
 }
