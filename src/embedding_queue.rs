@@ -27,7 +27,7 @@ pub(crate) struct EmbeddingQueue {
 }
 
 impl EmbeddingQueue {
-    pub(crate) fn new(provider: Box<dyn EmbeddingProvider>) -> Self {
+    pub(crate) fn new(provider: Arc<dyn EmbeddingProvider>) -> Self {
         let (finished_files_tx, _) = broadcast::channel::<Arc<Mutex<FileContext>>>(10000);
 
         // Create a long lived task to embed and send off completed files

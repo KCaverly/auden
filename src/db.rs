@@ -228,6 +228,30 @@ impl VectorDatabase {
         }
     }
 
+    pub(crate) async fn get_top_neighbours(
+        &self,
+        directory: PathBuf,
+        embedding: &Embedding,
+        n: usize,
+    ) -> anyhow::Result<Vec<i32>> {
+        let pool = self.pool.clone();
+        let vector = Vector::from(embedding.clone());
+        let rows = sqlx::query(
+            "SELECT span.id FROM span LEFT JOIN file ON span.file_id = file.id LEFT JOIN directory on file.directory_id = directory.id WHERE directory.path = $1 ORDER BY embedding <-> $2 LIMIT $3",
+        )
+        .bind(directory.as_path().to_string_lossy())
+        .bind(vector)
+        .bind(n as i32)
+        .fetch_all(&pool)
+        .await?;
+
+        anyhow::Ok(
+            rows.iter()
+                .filter_map(|r| r.try_get::<i32, _>(0).ok())
+                .collect::<Vec<i32>>(),
+        )
+    }
+
     pub(crate) async fn queue(&self, database_job: DatabaseJob) -> anyhow::Result<()> {
         log::debug!("sending database job for execution: {:?}", database_job);
         anyhow::Ok(self.executor.send(database_job).await?)

@@ -1,8 +1,9 @@
 use crate::db::{DatabaseJob, VectorDatabase};
-use crate::embedding::DummyEmbeddingProvider;
+use crate::embedding::{DummyEmbeddingProvider, EmbeddingProvider};
 use crate::embedding_queue::{EmbeddingJob, EmbeddingQueue};
 use crate::languages::{load_languages, LanguageConfig, LanguageRegistry};
 use crate::parsing::FileContextParser;
+use anyhow::anyhow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -19,10 +20,14 @@ pub(crate) struct SemanticIndex {
     vector_db: VectorDatabase,
     languages: LanguageRegistry,
     parse_sender: mpsc::Sender<Arc<(FileDetails, LanguageConfig)>>,
+    embedding_provider: Arc<dyn EmbeddingProvider>,
 }
 
 impl SemanticIndex {
-    pub(crate) async fn new(database_dir: PathBuf) -> anyhow::Result<Self> {
+    pub(crate) async fn new(
+        database_dir: PathBuf,
+        embedding_provider: Arc<dyn EmbeddingProvider>,
+    ) -> anyhow::Result<Self> {
         let (embedding_sender, mut embedding_receiver) = mpsc::channel::<EmbeddingJob>(10000);
 
         // Create a long-lived background task, which parses files
@@ -43,7 +48,7 @@ impl SemanticIndex {
         });
 
         // Create a long-lived background task, which queues files for embedding
-        let mut embedding_queue = EmbeddingQueue::new(Box::new(DummyEmbeddingProvider {}));
+        let mut embedding_queue = EmbeddingQueue::new(embedding_provider.clone());
         let mut long_lived_embedding_queue = embedding_queue.clone(); // I dont really like this
         tokio::spawn(async move {
             let mut new_values = false;
@@ -89,6 +94,7 @@ impl SemanticIndex {
             vector_db,
             languages,
             parse_sender,
+            embedding_provider,
         })
     }
 
@@ -140,5 +146,24 @@ impl SemanticIndex {
 
         let _ = self.walk_directory(directory_id, directory).await?;
         anyhow::Ok(())
+    }
+
+    pub(crate) async fn search_directory(
+        &self,
+        directory: PathBuf,
+        n: usize,
+        search_query: &str,
+    ) -> anyhow::Result<Vec<i32>> {
+        if let Some(embedding) = self
+            .embedding_provider
+            .embed(vec![search_query.to_string()])
+            .get(0)
+        {
+            self.vector_db
+                .get_top_neighbours(directory, embedding, n)
+                .await
+        } else {
+            Err(anyhow!("embedding provider failed to embed search query"))
+        }
     }
 }

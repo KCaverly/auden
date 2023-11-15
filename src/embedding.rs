@@ -1,6 +1,6 @@
 pub type Embedding = Vec<f32>;
 
-pub trait EmbeddingProvider: Send {
+pub trait EmbeddingProvider: Send + Sync {
     fn embed(&self, spans: Vec<String>) -> Vec<Embedding>;
 }
 
