@@ -1,4 +1,4 @@
-use crate::db::VectorDatabase;
+use crate::db::{DatabaseJob, VectorDatabase};
 use crate::embedding::DummyEmbeddingProvider;
 use crate::embedding_queue::{EmbeddingJob, EmbeddingQueue};
 use crate::languages::{load_languages, LanguageConfig, LanguageRegistry};
@@ -69,17 +69,21 @@ impl SemanticIndex {
 
         // Create a long-lived background task, which gets finished files and writes them to the
         // database
+        let vector_db = VectorDatabase::initialize(database_dir).await?;
         let mut finished_files_rx = long_lived_embedding_queue.finished_files_rx().await;
-        tokio::spawn(async move {
-            while let Some(finished_file) = finished_files_rx.recv().await.ok() {
-                log::debug!(
-                    "received finished file: {:?}",
-                    finished_file.lock().await.details.path
-                );
+        tokio::spawn({
+            let vector_db = vector_db.clone();
+            async move {
+                while let Some(finished_file) = finished_files_rx.recv().await.ok() {
+                    let _ = vector_db
+                        .queue(DatabaseJob::WriteFileAndSpans {
+                            context: finished_file,
+                        })
+                        .await;
+                }
             }
         });
 
-        let vector_db = VectorDatabase::initialize(database_dir).await?;
         let languages = load_languages();
         anyhow::Ok(SemanticIndex {
             vector_db,

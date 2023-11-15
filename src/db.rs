@@ -3,19 +3,39 @@ use std::time::Duration;
 use pg_embed::pg_enums::PgAuthMethod;
 use pg_embed::pg_fetch::{PgFetchSettings, PG_V15};
 use pg_embed::postgres::{PgEmbed, PgSettings};
+use pgvector::Vector;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, Executor, Pool, Postgres, Row};
+use std::fmt;
 use std::path::PathBuf;
-use tokio::sync::oneshot;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+
+use crate::embedding::Embedding;
+use crate::parsing::FileContext;
 
 const DATABASE_NAME: &str = "syntax_surfer";
 
-pub(crate) enum DatabaseJob {}
+pub(crate) enum DatabaseJob {
+    WriteFileAndSpans { context: Arc<Mutex<FileContext>> },
+}
 
+impl fmt::Debug for DatabaseJob {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DatabaseJob::WriteFileAndSpans { .. } => {
+                write!(f, "DatabaseJob::WriteFileAndSpans",)
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct VectorDatabase {
-    postgres_handle: PgEmbed,
+    postgres_handle: Arc<PgEmbed>,
     pool: Pool<Postgres>,
+    executor: mpsc::Sender<DatabaseJob>,
 }
 
 impl VectorDatabase {
@@ -86,7 +106,7 @@ impl VectorDatabase {
         .await?;
 
         pool.execute(
-            "CREATE TABLE IF NOT EXISTS spans (
+            "CREATE TABLE IF NOT EXISTS span (
                 id SERIAL PRIMARY KEY,
                 file_id INT,
                 start_byte INT NOT NULL,
@@ -101,14 +121,79 @@ impl VectorDatabase {
 
         log::debug!("tables created appropriately in database");
 
+        let (executor, mut receiver) = mpsc::channel::<DatabaseJob>(10000);
+        tokio::spawn({
+            let pool = pool.clone();
+            async move {
+                while let Some(job) = receiver.recv().await {
+                    log::debug!("receiver db job: {:?}", job);
+                    match job {
+                        DatabaseJob::WriteFileAndSpans { context } => {
+                            let file_context = context.lock().await;
+                            let file_id = VectorDatabase::get_or_create_file(
+                                &pool,
+                                &file_context.details.path,
+                                file_context.details.directory_id,
+                            )
+                            .await;
+
+                            if let Ok(file_id) = file_id {
+                                let mut data = Vec::new();
+                                for (embedding, document) in
+                                    file_context.embeddings.iter().zip(&file_context.documents)
+                                {
+                                    data.push((document.start_byte, document.end_byte, embedding));
+                                }
+                                let _ =
+                                    VectorDatabase::get_or_create_spans(&pool, file_id, data).await;
+                                log::debug!("wrote file {:?}", file_id);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         anyhow::Ok(VectorDatabase {
-            postgres_handle: pg,
+            postgres_handle: Arc::new(pg),
             pool,
+            executor,
         })
     }
 
     pub(crate) async fn get_conn(&self) -> anyhow::Result<PoolConnection<Postgres>> {
         anyhow::Ok(self.pool.acquire().await?)
+    }
+
+    async fn get_or_create_file(
+        pool: &Pool<Postgres>,
+        path: &PathBuf,
+        directory_id: usize,
+    ) -> anyhow::Result<usize> {
+        let mut conn = pool.acquire().await?;
+        let r = conn
+            .fetch_one(
+                format!(
+                    "INSERT INTO file (directory_id, path) VALUES ({}, '{}') RETURNING id",
+                    directory_id,
+                    path.as_path().to_string_lossy()
+                )
+                .as_str(),
+            )
+            .await?;
+        return anyhow::Ok(r.get::<i32, _>(0) as usize);
+    }
+
+    async fn get_or_create_spans(
+        pool: &Pool<Postgres>,
+        path_id: usize,
+        data: Vec<(usize, usize, &Embedding)>,
+    ) -> anyhow::Result<()> {
+        for row in data {
+            sqlx::query("INSERT INTO span (file_id, start_byte, end_byte, embedding) VALUES ($1, $2, $3, $4)").bind(path_id as i32).bind(row.0 as i32).bind(row.1 as i32).bind(row.2).execute(pool).await?;
+        }
+
+        anyhow::Ok(())
     }
 
     pub(crate) async fn get_or_create_directory(&self, path: &PathBuf) -> anyhow::Result<usize> {
@@ -141,5 +226,10 @@ impl VectorDatabase {
                 return anyhow::Ok(r.get::<i32, _>(0) as usize);
             }
         }
+    }
+
+    pub(crate) async fn queue(&self, database_job: DatabaseJob) -> anyhow::Result<()> {
+        log::debug!("sending database job for execution: {:?}", database_job);
+        anyhow::Ok(self.executor.send(database_job).await?)
     }
 }
