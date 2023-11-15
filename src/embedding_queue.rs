@@ -96,7 +96,7 @@ impl EmbeddingQueue {
             EmbeddingJob::Embed { file_context } => {
                 log::debug!(
                     "queueing embedding job: {:?}",
-                    file_context.lock().await.path
+                    file_context.lock().await.details.path
                 );
                 let mut current_idx = 0;
                 let mut last_idx = 0;

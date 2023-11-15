@@ -9,10 +9,16 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::Duration;
 use walkdir::{DirEntry, WalkDir};
 
+#[derive(Debug, Clone)]
+pub(crate) struct FileDetails {
+    pub(crate) path: PathBuf,
+    pub(crate) directory_id: usize,
+}
+
 pub(crate) struct SemanticIndex {
     vector_db: VectorDatabase,
     languages: LanguageRegistry,
-    parse_sender: mpsc::Sender<Arc<(PathBuf, LanguageConfig)>>,
+    parse_sender: mpsc::Sender<Arc<(FileDetails, LanguageConfig)>>,
 }
 
 impl SemanticIndex {
@@ -21,7 +27,7 @@ impl SemanticIndex {
 
         // Create a long-lived background task, which parses files
         let (parse_sender, mut parse_receiver) =
-            mpsc::channel::<Arc<(PathBuf, LanguageConfig)>>(10000);
+            mpsc::channel::<Arc<(FileDetails, LanguageConfig)>>(10000);
         tokio::spawn(async move {
             while let Some(file_to_parse) = parse_receiver.recv().await {
                 if let Ok(context) =
@@ -68,7 +74,7 @@ impl SemanticIndex {
             while let Some(finished_file) = finished_files_rx.recv().await.ok() {
                 log::debug!(
                     "received finished file: {:?}",
-                    finished_file.lock().await.path
+                    finished_file.lock().await.details.path
                 );
             }
         });
@@ -82,7 +88,7 @@ impl SemanticIndex {
         })
     }
 
-    async fn walk_directory(&self, directory: PathBuf) -> anyhow::Result<()> {
+    async fn walk_directory(&self, directory_id: usize, directory: PathBuf) -> anyhow::Result<()> {
         fn is_hidden(entry: &DirEntry) -> bool {
             entry
                 .file_name()
@@ -108,8 +114,12 @@ impl SemanticIndex {
                         path.extension().and_then(|extension| extension.to_str())
                     {
                         if let Some(config) = self.languages.get_config_from_extension(extension) {
+                            let file_details = FileDetails {
+                                path: path.to_path_buf(),
+                                directory_id: directory_id.clone(),
+                            };
                             self.parse_sender
-                                .send(Arc::new((path.to_path_buf(), config.clone())))
+                                .send(Arc::new((file_details, config.clone())))
                                 .await?;
                         }
                     }
@@ -121,7 +131,10 @@ impl SemanticIndex {
     }
 
     pub(crate) async fn index_directory(&self, directory: PathBuf) -> anyhow::Result<()> {
-        let _ = self.walk_directory(directory).await?;
+        // Get or Create Directory Item in Vector Database
+        let directory_id = self.vector_db.get_or_create_directory(&directory).await?;
+
+        let _ = self.walk_directory(directory_id, directory).await?;
         anyhow::Ok(())
     }
 }

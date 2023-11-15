@@ -7,8 +7,11 @@ use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, Executor, Pool, Postgres, Row};
 use std::path::PathBuf;
+use tokio::sync::oneshot;
 
 const DATABASE_NAME: &str = "syntax_surfer";
+
+pub(crate) enum DatabaseJob {}
 
 pub(crate) struct VectorDatabase {
     postgres_handle: PgEmbed,
@@ -108,7 +111,7 @@ impl VectorDatabase {
         anyhow::Ok(self.pool.acquire().await?)
     }
 
-    pub(crate) async fn get_or_create_directory(&self, path: PathBuf) -> anyhow::Result<usize> {
+    pub(crate) async fn get_or_create_directory(&self, path: &PathBuf) -> anyhow::Result<usize> {
         let pool = self.pool.clone();
         let path_str = path.as_path().to_string_lossy();
 

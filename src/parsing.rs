@@ -1,5 +1,6 @@
 use crate::embedding::Embedding;
 use crate::languages::LanguageConfig;
+use crate::semantic_index::FileDetails;
 use anyhow;
 use std::fs;
 use std::ops::Range;
@@ -15,7 +16,7 @@ pub(crate) struct ContextDocument {
 
 #[derive(Debug)]
 pub(crate) struct FileContext {
-    pub(crate) path: PathBuf,
+    pub(crate) details: FileDetails,
     pub(crate) documents: Vec<ContextDocument>,
     pub(crate) embeddings: Vec<Embedding>,
 }
@@ -36,12 +37,12 @@ pub(crate) struct FileContextParser {}
 // or if we are just using this for the namespace
 impl FileContextParser {
     pub(crate) fn parse_file(
-        file_path: &PathBuf,
+        file_details: &FileDetails,
         config: &LanguageConfig,
     ) -> anyhow::Result<FileContext> {
-        log::debug!("parsing file: {:?}", file_path);
+        log::debug!("parsing file: {:?}", file_details);
 
-        let content = fs::read_to_string(file_path)?;
+        let content = fs::read_to_string(&file_details.path)?;
         let documents = FileContextParser::parse_content(&content, config)?;
         let embeddings = documents
             .iter()
@@ -49,7 +50,7 @@ impl FileContextParser {
             .collect::<Vec<Embedding>>();
 
         anyhow::Ok(FileContext {
-            path: file_path.clone(),
+            details: file_details.clone(),
             documents,
             embeddings,
         })
