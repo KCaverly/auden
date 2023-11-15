@@ -28,19 +28,11 @@ async fn main() {
             .await
             .ok()
         {
-            sleep(Duration::from_secs(1)).await;
-            let status = index
-                .get_status(PathBuf::from("/home/kcaverly/personal/blang"))
-                .await;
-            log::debug!("STATUS: {:?}", status);
-
             indexing.notified().await;
-            log::debug!("indexing complete!");
 
             let status = index
                 .get_status(PathBuf::from("/home/kcaverly/personal/blang"))
                 .await;
-            log::debug!("STATUS: {:?}", status);
 
             let results = index
                 .search_directory(

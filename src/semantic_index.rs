@@ -227,6 +227,11 @@ impl SemanticIndex {
         n: usize,
         search_query: &str,
     ) -> anyhow::Result<Vec<i32>> {
+        // Handle for calls to search before indexing is complete, by automatically kicking
+        // indexing off.
+        // let await = self.index_directory(directory.clone()).await;
+        // indexing.await;
+
         if let Some(embedding) = self
             .embedding_provider
             .embed(vec![search_query.to_string()])
