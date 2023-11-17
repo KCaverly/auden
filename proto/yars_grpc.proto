@@ -1,0 +1,14 @@
+syntax = "proto3";
+package yars_grpc;
+
+service Yars {
+    rpc IndexDirectory (IndexRequest) returns (IndexReply);
+}
+
+message IndexRequest {
+    string path = 1;
+}
+
+message IndexReply {
+    string status = 1;
+}

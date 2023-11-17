@@ -27,3 +27,8 @@ pgvector = { version = "0.3", features = ["sqlx"] }
 tree-sitter = "0.20.10"
 tree-sitter-rust = "0.20.3"
 pretty_assertions = "*"
+tonic = "0.10"
+prost = "0.12"
+
+[build-dependencies]
+tonic-build = "0.10"
