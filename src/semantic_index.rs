@@ -1,10 +1,9 @@
 use crate::db::{DatabaseJob, VectorDatabase};
-use crate::embedding::{DummyEmbeddingProvider, EmbeddingProvider};
+use crate::embedding::EmbeddingProvider;
 use crate::embedding_queue::{EmbeddingJob, EmbeddingQueue};
 use crate::languages::{load_languages, LanguageConfig, LanguageRegistry};
 use crate::parsing::FileContextParser;
 use anyhow::anyhow;
-use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -64,13 +63,13 @@ impl DirectoryState {
 }
 
 #[derive(Debug)]
-pub(crate) enum IndexingStatus {
+pub enum IndexingStatus {
     Indexing { jobs_outstanding: usize },
     Indexed,
     NotIndexed,
 }
 
-pub(crate) struct SemanticIndex {
+pub struct SemanticIndex {
     vector_db: VectorDatabase,
     languages: LanguageRegistry,
     parse_sender: mpsc::Sender<Arc<(FileDetails, LanguageConfig)>>,
@@ -79,7 +78,7 @@ pub(crate) struct SemanticIndex {
 }
 
 impl SemanticIndex {
-    pub(crate) async fn new(
+    pub async fn new(
         database_dir: PathBuf,
         embedding_provider: Arc<dyn EmbeddingProvider>,
     ) -> anyhow::Result<Self> {
@@ -202,10 +201,7 @@ impl SemanticIndex {
         anyhow::Ok(())
     }
 
-    pub(crate) async fn index_directory(
-        &mut self,
-        directory: PathBuf,
-    ) -> anyhow::Result<Arc<Notify>> {
+    pub async fn index_directory(&mut self, directory: PathBuf) -> anyhow::Result<Arc<Notify>> {
         // Get or Create Directory Item in Vector Database
         let directory_id = self.vector_db.get_or_create_directory(&directory).await?;
         let directory_state = Arc::new(DirectoryState::new(directory_id));
@@ -221,7 +217,7 @@ impl SemanticIndex {
         anyhow::Ok(directory_state.notify.clone())
     }
 
-    pub(crate) async fn search_directory(
+    pub async fn search_directory(
         &self,
         directory: PathBuf,
         n: usize,
@@ -245,7 +241,7 @@ impl SemanticIndex {
         }
     }
 
-    pub(crate) async fn get_status(&self, directory: PathBuf) -> IndexingStatus {
+    pub async fn get_status(&self, directory: PathBuf) -> IndexingStatus {
         if let Some(directory_state) = self.directory_state.get(&directory) {
             directory_state.status()
         } else {

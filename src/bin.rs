@@ -1,16 +1,9 @@
-mod db;
-mod embedding;
-mod embedding_queue;
-mod languages;
-mod parsing;
-mod semantic_index;
-
-use crate::semantic_index::SemanticIndex;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
+use yars::semantic_index::SemanticIndex;
 
-use self::embedding::DummyEmbeddingProvider;
+use yars::embedding::DummyEmbeddingProvider;
 
 #[tokio::main]
 async fn main() {

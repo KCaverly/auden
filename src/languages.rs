@@ -1,12 +1,5 @@
 use anyhow::anyhow;
 use tree_sitter::{Language, Parser, Query};
-// I think at some point we will need a more efficient
-// way to go from
-//
-//    LanguageName -> LanguageConfig
-//    Suffix -> Languageconfig
-//
-// but for now, maybe just a walking a path naively will work.
 
 #[derive(Debug)]
 pub(crate) struct LanguageRegistry {
