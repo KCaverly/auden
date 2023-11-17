@@ -1,4 +1,4 @@
-use crate::db::{DatabaseJob, VectorDatabase};
+use crate::db::{DatabaseJob, SearchResult, VectorDatabase};
 use crate::embedding::EmbeddingProvider;
 use crate::embedding_queue::{EmbeddingJob, EmbeddingQueue};
 use crate::languages::{load_languages, LanguageConfig, LanguageRegistry};
@@ -67,6 +67,26 @@ pub enum IndexingStatus {
     Indexing { jobs_outstanding: usize },
     Indexed,
     NotIndexed,
+}
+
+impl ToString for IndexingStatus {
+    fn to_string(&self) -> String {
+        match self {
+            IndexingStatus::Indexing { .. } => "Indexing",
+            IndexingStatus::Indexed => "Indexed",
+            IndexingStatus::NotIndexed => "Not Indexed",
+        }
+        .to_string()
+    }
+}
+
+impl IndexingStatus {
+    pub fn outstanding(&self) -> Option<usize> {
+        match self {
+            IndexingStatus::Indexing { jobs_outstanding } => Some(*jobs_outstanding),
+            _ => None,
+        }
+    }
 }
 
 pub struct SemanticIndex {
@@ -222,7 +242,7 @@ impl SemanticIndex {
         directory: PathBuf,
         n: usize,
         search_query: &str,
-    ) -> anyhow::Result<Vec<i32>> {
+    ) -> anyhow::Result<Vec<SearchResult>> {
         // Handle for calls to search before indexing is complete, by automatically kicking
         // indexing off.
         // let await = self.index_directory(directory.clone()).await;

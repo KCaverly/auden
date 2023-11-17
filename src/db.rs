@@ -31,6 +31,13 @@ impl fmt::Debug for DatabaseJob {
     }
 }
 
+pub struct SearchResult {
+    pub id: usize,
+    pub path: PathBuf,
+    pub start_byte: usize,
+    pub end_byte: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct VectorDatabase {
     postgres_handle: Arc<PgEmbed>,
@@ -233,11 +240,11 @@ impl VectorDatabase {
         directory: PathBuf,
         embedding: &Embedding,
         n: usize,
-    ) -> anyhow::Result<Vec<i32>> {
+    ) -> anyhow::Result<Vec<SearchResult>> {
         let pool = self.pool.clone();
         let vector = Vector::from(embedding.clone());
         let rows = sqlx::query(
-            "SELECT span.id FROM span LEFT JOIN file ON span.file_id = file.id LEFT JOIN directory on file.directory_id = directory.id WHERE directory.path = $1 ORDER BY embedding <-> $2 LIMIT $3",
+            "SELECT span.id, file.path, span.start_byte, span.end_byte FROM span LEFT JOIN file ON span.file_id = file.id LEFT JOIN directory on file.directory_id = directory.id WHERE directory.path = $1 ORDER BY embedding <-> $2 LIMIT $3",
         )
         .bind(directory.as_path().to_string_lossy())
         .bind(vector)
@@ -245,11 +252,22 @@ impl VectorDatabase {
         .fetch_all(&pool)
         .await?;
 
-        anyhow::Ok(
-            rows.iter()
-                .filter_map(|r| r.try_get::<i32, _>(0).ok())
-                .collect::<Vec<i32>>(),
-        )
+        let mut results = Vec::new();
+        for row in rows {
+            let id = row.try_get::<i32, _>(0)? as usize;
+            let path = PathBuf::from(row.try_get::<String, _>(1)?);
+            let start_byte = row.try_get::<i32, _>(2)? as usize;
+            let end_byte = row.try_get::<i32, _>(3)? as usize;
+
+            results.push(SearchResult {
+                id,
+                path,
+                start_byte,
+                end_byte,
+            })
+        }
+
+        anyhow::Ok(results)
     }
 
     pub(crate) async fn queue(&self, database_job: DatabaseJob) -> anyhow::Result<()> {

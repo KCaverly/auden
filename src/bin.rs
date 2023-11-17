@@ -5,9 +5,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use yars::embedding::DummyEmbeddingProvider;
+use yars::semantic_index::IndexingStatus;
 use yars::semantic_index::SemanticIndex;
 use yars_grpc::yars_server::{Yars, YarsServer};
-use yars_grpc::{IndexReply, IndexRequest};
+use yars_grpc::{
+    IndexReply, IndexRequest, SearchReply, SearchRequest, SearchResultReply, StatusReply,
+    StatusRequest,
+};
 
 pub mod yars_grpc {
     tonic::include_proto!("yars_grpc");
@@ -34,7 +38,7 @@ impl YarsAgent {
 impl Yars for YarsAgent {
     async fn index_directory(
         &self,
-        request: Request<IndexRequest>, // Accept request of type HelloRequest
+        request: Request<IndexRequest>,
     ) -> Result<Response<IndexReply>, Status> {
         let mut index = self.index.lock().await;
 
@@ -42,14 +46,78 @@ impl Yars for YarsAgent {
         let indexing = index.index_directory(path.clone()).await;
         let reply = match indexing {
             Ok(_) => IndexReply {
+                code: 0,
                 status: format!("Indexing {:?}", path).into(),
             },
             Err(err) => IndexReply {
+                code: 1,
                 status: format!("Failed to start Indexing: {:?}", err),
             },
         };
 
-        Ok(Response::new(reply)) // Send back our formatted greeting
+        Ok(Response::new(reply))
+    }
+
+    async fn indexing_status(
+        &self,
+        request: Request<StatusRequest>,
+    ) -> Result<Response<StatusReply>, Status> {
+        let index = self.index.lock().await;
+
+        let path = PathBuf::from(request.into_inner().path);
+        let status = index.get_status(path.clone()).await;
+
+        let reply = match status {
+            IndexingStatus::Indexing { jobs_outstanding } => StatusReply {
+                status: status.to_string(),
+                outstanding: jobs_outstanding as i32,
+            },
+            _ => StatusReply {
+                status: status.to_string(),
+                outstanding: 0,
+            },
+        };
+
+        Ok(Response::new(reply))
+    }
+
+    async fn search_directory(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchReply>, Status> {
+        let index = self.index.lock().await;
+        let request = request.into_inner();
+        let path = PathBuf::from(request.path);
+        let n = request.n as usize;
+        let search_query = request.query;
+
+        let search_results = index.search_directory(path, n, search_query.as_str()).await;
+        let reply = match search_results {
+            Ok(results) => {
+                let search_results = results
+                    .iter()
+                    .map(|result| SearchResultReply {
+                        id: result.id as i32,
+                        start_byte: result.start_byte as i32,
+                        end_byte: result.end_byte as i32,
+                        path: result.path.to_string_lossy().to_string(),
+                    })
+                    .collect::<Vec<SearchResultReply>>();
+
+                SearchReply {
+                    code: 0,
+                    message: "Searched directory successfully: {:?}".to_string(),
+                    result: search_results,
+                }
+            }
+            Err(err) => SearchReply {
+                code: 1,
+                message: format!("Failed to search directory: {:?}", err),
+                result: vec![],
+            },
+        };
+
+        Ok(Response::new(reply))
     }
 }
 
