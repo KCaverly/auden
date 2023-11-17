@@ -29,6 +29,7 @@ tree-sitter-rust = "0.20.3"
 pretty_assertions = "*"
 tonic = "0.10"
 prost = "0.12"
+sha2 = "*"
 
 [build-dependencies]
 tonic-build = "0.10"

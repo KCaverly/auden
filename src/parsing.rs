@@ -2,16 +2,17 @@ use crate::embedding::Embedding;
 use crate::languages::LanguageConfig;
 use crate::semantic_index::FileDetails;
 use anyhow;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::ops::Range;
-use std::path::PathBuf;
-use tree_sitter::{Parser, Query, QueryCursor, TreeCursor};
+use tree_sitter::QueryCursor;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ContextDocument {
     pub start_byte: usize,
     pub end_byte: usize,
     pub content: String,
+    pub sha: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -62,6 +63,12 @@ impl FileContextParser {
         })
     }
 
+    pub(crate) fn get_sha(content: &str) -> Vec<u8> {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        hasher.finalize()[..].to_vec()
+    }
+
     pub(crate) fn parse_content(
         content: &str,
         config: &LanguageConfig,
@@ -76,11 +83,13 @@ impl FileContextParser {
         for m in query_cursor.matches(&query, tree.root_node(), content.as_bytes()) {
             for capture in m.captures {
                 if capture.index == config.item_idx() {
+                    let span = &content[capture.node.start_byte()..capture.node.end_byte()];
+                    let sha = FileContextParser::get_sha(&span);
                     documents.push(ContextDocument {
                         start_byte: capture.node.start_byte(),
                         end_byte: capture.node.end_byte(),
-                        content: content[capture.node.start_byte()..capture.node.end_byte()]
-                            .to_string(),
+                        content: span.to_string(),
+                        sha,
                     });
                 }
             }
@@ -95,6 +104,12 @@ mod tests {
     use super::*;
     use crate::languages::load_languages;
     use pretty_assertions::assert_eq;
+
+    fn sha(content: &str) -> Vec<u8> {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        hasher.finalize()[..].to_vec()
+    }
 
     #[test]
     fn test_rust_parsing() {
@@ -116,6 +131,7 @@ mod tests {
                 start_byte: 9,
                 end_byte: 36,
                 content: "struct CodeContextParser {}".to_string(),
+                sha: sha("struct CodeContextParser {}"),
             },
             ContextDocument {
                 start_byte: 46,
@@ -126,6 +142,11 @@ mod tests {
             }
         }"
                 .to_string(),
+                sha: sha("impl CodecontextParser {
+            pub fn parse(content: &str) -> anyhow::Result<()> {
+                todo!();
+            }
+        }"),
             },
         ];
 

@@ -6,7 +6,7 @@ use pg_embed::postgres::{PgEmbed, PgSettings};
 use pgvector::Vector;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Connection, Executor, Pool, Postgres, Row};
+use sqlx::{Executor, Pool, Postgres, Row};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -118,6 +118,7 @@ impl VectorDatabase {
                 file_id INT,
                 start_byte INT NOT NULL,
                 end_byte INT NOT NULL,
+                sha BYTEA NOT NULL,
                 embedding vector,
                 CONSTRAINT fk_file
                     FOREIGN KEY(file_id)
@@ -149,7 +150,12 @@ impl VectorDatabase {
                                 for (embedding, document) in
                                     file_context.embeddings.iter().zip(&file_context.documents)
                                 {
-                                    data.push((document.start_byte, document.end_byte, embedding));
+                                    data.push((
+                                        document.start_byte,
+                                        document.end_byte,
+                                        document.sha.clone(),
+                                        embedding,
+                                    ));
                                 }
                                 let _ =
                                     VectorDatabase::get_or_create_spans(&pool, file_id, data).await;
@@ -194,10 +200,10 @@ impl VectorDatabase {
     async fn get_or_create_spans(
         pool: &Pool<Postgres>,
         path_id: usize,
-        data: Vec<(usize, usize, &Embedding)>,
+        data: Vec<(usize, usize, Vec<u8>, &Embedding)>,
     ) -> anyhow::Result<()> {
         for row in data {
-            sqlx::query("INSERT INTO span (file_id, start_byte, end_byte, embedding) VALUES ($1, $2, $3, $4)").bind(path_id as i32).bind(row.0 as i32).bind(row.1 as i32).bind(row.2).execute(pool).await?;
+            sqlx::query("INSERT INTO span (file_id, start_byte, end_byte, sha, embedding) VALUES ($1, $2, $3, $4, $5)").bind(path_id as i32).bind(row.0 as i32).bind(row.1 as i32).bind(row.2).bind(row.3).execute(pool).await?;
         }
 
         anyhow::Ok(())
