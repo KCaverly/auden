@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, Mutex};
 use crate::embedding::Embedding;
 use crate::parsing::FileContext;
 
-const DATABASE_NAME: &str = "syntax_surfer";
+const DATABASE_NAME: &str = "yars";
 
 pub(crate) enum DatabaseJob {
     WriteFileAndSpans { context: Arc<Mutex<FileContext>> },
