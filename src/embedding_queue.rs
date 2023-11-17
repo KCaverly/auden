@@ -126,7 +126,6 @@ impl EmbeddingQueue {
                 }
             }
             EmbeddingJob::Flush => {
-                println!("FLUSHING QUEUE!!!!");
                 self.flush_queue().await;
             }
         }

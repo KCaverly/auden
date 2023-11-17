@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
 use yars::semantic_index::SemanticIndex;
 
 use yars::embedding::DummyEmbeddingProvider;
