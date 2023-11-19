@@ -1,4 +1,4 @@
-use crate::embedding::Embedding;
+use crate::embedding::{self, Embedding};
 use crate::languages::LanguageConfig;
 use crate::semantic_index::FileDetails;
 use anyhow;
@@ -23,8 +23,14 @@ pub(crate) struct FileContext {
 }
 
 impl FileContext {
-    pub(crate) fn document_ids(&self) -> Range<usize> {
-        0..self.documents.len()
+    pub(crate) fn document_ids(&self) -> Vec<usize> {
+        let mut ids = Vec::new();
+        for (idx, embedding) in self.embeddings.iter().enumerate() {
+            if embedding.is_empty() {
+                ids.push(idx);
+            }
+        }
+        ids
     }
     pub(crate) fn complete(&self) -> bool {
         !self.embeddings.iter().any(|embed| embed.is_empty())

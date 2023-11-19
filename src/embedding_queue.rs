@@ -15,8 +15,7 @@ pub(crate) enum EmbeddingJob {
 #[derive(Debug, Clone)]
 struct FileFragment {
     file_context: Arc<Mutex<FileContext>>,
-    start_idx: usize,
-    end_idx: usize,
+    embeddable_ids: Vec<usize>,
 }
 
 #[derive(Clone)]
@@ -29,7 +28,6 @@ pub(crate) struct EmbeddingQueue {
 impl EmbeddingQueue {
     pub(crate) fn new(provider: Arc<dyn EmbeddingProvider>) -> Self {
         let (finished_files_tx, _) = broadcast::channel::<Arc<Mutex<FileContext>>>(10000);
-
         // Create a long lived task to embed and send off completed files
         let (embed_tx, mut receiver) = mpsc::channel::<Vec<FileFragment>>(10000);
         tokio::spawn({
@@ -40,8 +38,8 @@ impl EmbeddingQueue {
                     let mut spans = Vec::new();
                     for fragment in &queue {
                         let unlocked = fragment.file_context.lock().await;
-                        for idx in fragment.start_idx..fragment.end_idx {
-                            spans.push(unlocked.documents[idx].content.clone());
+                        for idx in &fragment.embeddable_ids {
+                            spans.push(unlocked.documents[*idx].content.clone());
                         }
                     }
 
@@ -51,8 +49,8 @@ impl EmbeddingQueue {
                     let mut i = 0;
                     for fragment in &queue {
                         let mut unlocked = fragment.file_context.lock().await;
-                        for idx in fragment.start_idx..(fragment.end_idx + 1) {
-                            unlocked.embeddings[idx] = embeddings[i].clone();
+                        for idx in &fragment.embeddable_ids {
+                            unlocked.embeddings[*idx] = embeddings[i].clone();
                         }
                         i += 1;
 
@@ -84,44 +82,47 @@ impl EmbeddingQueue {
     }
 
     fn queue_size(&self) -> usize {
-        self.queue
-            .iter()
-            .map(|f| (f.end_idx - f.start_idx) + 1)
-            .sum()
+        println!("EXISTING QUEUE: {:?}", self.queue);
+        self.queue.iter().map(|f| f.embeddable_ids.len()).sum()
     }
 
     pub(crate) async fn queue_job(&mut self, job: EmbeddingJob) {
         let mut size = self.queue_size();
+        println!("QUEUE SIZE: {:?}", &size);
         match job {
             EmbeddingJob::Embed { file_context } => {
                 log::debug!(
                     "queueing embedding job: {:?}",
                     file_context.lock().await.details.path
                 );
-                let mut current_idx = 0;
-                let mut last_idx = 0;
-                let ids = file_context.lock().await.document_ids();
-                for idx in ids {
+                let outstanding_ids = file_context.lock().await.document_ids();
+                let mut embeddable_ids = Vec::new();
+
+                println!("OUTSTANDING IDS: {:?}", outstanding_ids);
+
+                for idx in outstanding_ids {
                     size += 1;
+                    embeddable_ids.push(idx);
+
+                    println!("EMBEDDABLE IDS: {:?}", &embeddable_ids);
 
                     if size == 10 {
+                        println!("embeddable ids len pre: {:?}", &embeddable_ids.len());
+                        let fragment_ids = mem::take(&mut embeddable_ids);
+                        println!("embeddable ids len post: {:?}", &embeddable_ids.len());
                         self.queue.push(FileFragment {
                             file_context: file_context.clone(),
-                            start_idx: current_idx,
-                            end_idx: idx,
+                            embeddable_ids: fragment_ids,
                         });
-                        current_idx = idx;
                         self.flush_queue().await;
-                    }
-
-                    last_idx = idx;
+                        size = 0;
+                    };
                 }
 
-                if current_idx != last_idx {
+                if embeddable_ids.len() != 0 {
                     self.queue.push(FileFragment {
                         file_context: file_context.clone(),
-                        start_idx: current_idx,
-                        end_idx: last_idx,
+                        embeddable_ids,
                     });
                 }
             }

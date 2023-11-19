@@ -1,5 +1,5 @@
 use crate::db::{DatabaseJob, SearchResult, VectorDatabase};
-use crate::embedding::EmbeddingProvider;
+use crate::embedding::{Embedding, EmbeddingProvider};
 use crate::embedding_queue::{EmbeddingJob, EmbeddingQueue};
 use crate::languages::{load_languages, LanguageConfig, LanguageRegistry};
 use crate::parsing::FileContextParser;
@@ -92,7 +92,13 @@ impl IndexingStatus {
 pub struct SemanticIndex {
     vector_db: VectorDatabase,
     languages: LanguageRegistry,
-    parse_sender: mpsc::Sender<Arc<(FileDetails, LanguageConfig)>>,
+    parse_sender: mpsc::Sender<
+        Arc<(
+            FileDetails,
+            LanguageConfig,
+            Arc<HashMap<Vec<u8>, Embedding>>,
+        )>,
+    >,
     embedding_provider: Arc<dyn EmbeddingProvider>,
     directory_state: HashMap<PathBuf, Arc<DirectoryState>>,
 }
@@ -105,14 +111,26 @@ impl SemanticIndex {
         let (embedding_sender, mut embedding_receiver) = mpsc::channel::<EmbeddingJob>(10000);
 
         // Create a long-lived background task, which parses files
-        let (parse_sender, mut parse_receiver) =
-            mpsc::channel::<Arc<(FileDetails, LanguageConfig)>>(10000);
+        let (parse_sender, mut parse_receiver) = mpsc::channel::<
+            Arc<(
+                FileDetails,
+                LanguageConfig,
+                Arc<HashMap<Vec<u8>, Embedding>>,
+            )>,
+        >(10000);
         tokio::spawn(async move {
             while let Some(file_to_parse) = parse_receiver.recv().await {
-                if let Ok(context) =
+                if let Ok(mut context) =
                     FileContextParser::parse_file(&file_to_parse.0, &file_to_parse.1)
                 {
                     context.details.directory_state.new_job();
+
+                    // Update embeddings if the shas are already available
+                    for (idx, document) in context.documents.iter().enumerate() {
+                        if let Some(embedding) = file_to_parse.2.get(&document.sha) {
+                            context.embeddings[idx] = embedding.clone();
+                        }
+                    }
 
                     let _ = embedding_sender
                         .send(EmbeddingJob::Embed {
@@ -179,6 +197,7 @@ impl SemanticIndex {
         &self,
         directory_state: Arc<DirectoryState>,
         directory: PathBuf,
+        existing_embeddings: Arc<HashMap<Vec<u8>, Embedding>>,
     ) -> anyhow::Result<()> {
         fn is_hidden(entry: &DirEntry) -> bool {
             entry
@@ -210,7 +229,11 @@ impl SemanticIndex {
                                 directory_state: directory_state.clone(),
                             };
                             self.parse_sender
-                                .send(Arc::new((file_details, config.clone())))
+                                .send(Arc::new((
+                                    file_details,
+                                    config.clone(),
+                                    existing_embeddings.clone(),
+                                )))
                                 .await?;
                         }
                     }
@@ -226,12 +249,18 @@ impl SemanticIndex {
         let directory_id = self.vector_db.get_or_create_directory(&directory).await?;
         let directory_state = Arc::new(DirectoryState::new(directory_id));
 
+        let existing_embeddings = Arc::new(
+            self.vector_db
+                .get_embeddings_for_directory(&directory)
+                .await?,
+        );
+
         // TODO: Make this work for concurrent index calls
         self.directory_state
             .insert(directory.clone(), directory_state.clone());
 
         let _ = self
-            .walk_directory(directory_state.clone(), directory)
+            .walk_directory(directory_state.clone(), directory, existing_embeddings)
             .await?;
 
         anyhow::Ok(directory_state.notify.clone())
@@ -247,6 +276,7 @@ impl SemanticIndex {
         // indexing off.
         // let await = self.index_directory(directory.clone()).await;
         // indexing.await;
+        log::debug!("searching {:?} for {:?}", &directory, &search_query);
 
         if let Some(embedding) = self
             .embedding_provider

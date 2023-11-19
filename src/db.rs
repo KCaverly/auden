@@ -7,6 +7,7 @@ use pgvector::Vector;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, Pool, Postgres, Row};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,6 +32,7 @@ impl fmt::Debug for DatabaseJob {
     }
 }
 
+#[derive(Debug)]
 pub struct SearchResult {
     pub id: usize,
     pub path: PathBuf,
@@ -279,5 +281,24 @@ impl VectorDatabase {
     pub(crate) async fn queue(&self, database_job: DatabaseJob) -> anyhow::Result<()> {
         log::debug!("sending database job for execution: {:?}", database_job);
         anyhow::Ok(self.executor.send(database_job).await?)
+    }
+
+    pub(crate) async fn get_embeddings_for_directory(
+        &self,
+        path: &PathBuf,
+    ) -> anyhow::Result<HashMap<Vec<u8>, Embedding>> {
+        let pool = self.pool.clone();
+        let rows = sqlx::query(
+            "SELECT span.sha, span.embedding FROM span LEFT JOIN file ON span.file_id = file.id LEFT JOIN directory ON file.directory_id = directory.id WHERE directory.path = $1"
+        ).bind(path.as_path().to_string_lossy()).fetch_all(&pool).await?;
+
+        let mut embeddings = HashMap::new();
+        for row in rows {
+            let digest = row.try_get::<Vec<u8>, _>(0)?;
+            let embedding = row.try_get::<Vec<f32>, _>(0)?;
+            embeddings.insert(digest, embedding);
+        }
+
+        anyhow::Ok(embeddings)
     }
 }
