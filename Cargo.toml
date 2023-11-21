@@ -30,6 +30,8 @@ pretty_assertions = "*"
 tonic = "0.10"
 prost = "0.12"
 sha2 = "*"
+surrealdb = { version = "1.0.0", features = ["kv-rocksdb"] }
+serde = { version = "1.0.192", features = ["derive"] }
 
 [build-dependencies]
 tonic-build = "0.10"

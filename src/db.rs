@@ -18,19 +18,19 @@ use crate::parsing::FileContext;
 
 const DATABASE_NAME: &str = "yars";
 
-pub(crate) enum DatabaseJob {
-    WriteFileAndSpans { context: Arc<Mutex<FileContext>> },
-}
-
-impl fmt::Debug for DatabaseJob {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            DatabaseJob::WriteFileAndSpans { .. } => {
-                write!(f, "DatabaseJob::WriteFileAndSpans",)
-            }
-        }
-    }
-}
+// pub(crate) enum DatabaseJob {
+//     WriteFileAndSpans { context: Arc<Mutex<FileContext>> },
+// }
+//
+// impl fmt::Debug for DatabaseJob {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         match self {
+//             DatabaseJob::WriteFileAndSpans { .. } => {
+//                 write!(f, "DatabaseJob::WriteFileAndSpans",)
+//             }
+//         }
+//     }
+// }
 
 #[derive(Debug)]
 pub struct SearchResult {
