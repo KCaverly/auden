@@ -4,9 +4,9 @@ use std::sync::Arc;
 use yars::semantic_index::SemanticIndex;
 
 use yars::embedding::DummyEmbeddingProvider;
-#[tokio::main]
-async fn main() {
-    // simple_logger::init_with_env().unwrap();
+
+async fn run_example() {
+    simple_logger::init_with_env().unwrap();
 
     let directory = "/home/kcaverly/personal/yars";
 
@@ -27,4 +27,21 @@ async fn main() {
             println!("RESULTS: {:?}", results);
         };
     }
+}
+
+fn main() {
+    // This is required for surrealdb recursive queries
+    // https://github.com/surrealdb/surrealdb/issues/2920
+    let stack_size = 10 * 1024 * 1024;
+
+    // Stack frames are generally larger in debug mode.
+    #[cfg(debug_assertions)]
+    let stack_size = stack_size * 2;
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(stack_size)
+        .build()
+        .unwrap()
+        .block_on(run_example());
 }
