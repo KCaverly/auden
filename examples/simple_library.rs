@@ -6,7 +6,7 @@ use yars::semantic_index::SemanticIndex;
 use yars::embedding::DummyEmbeddingProvider;
 #[tokio::main]
 async fn main() {
-    simple_logger::init_with_env().unwrap();
+    // simple_logger::init_with_env().unwrap();
 
     let directory = "/home/kcaverly/personal/yars";
 

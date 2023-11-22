@@ -54,7 +54,9 @@ impl EmbeddingQueue {
                         }
                         i += 1;
 
-                        if unlocked.complete() {
+                        let complete = unlocked.complete();
+                        drop(unlocked);
+                        if complete {
                             let _ = finished_files_tx.send(fragment.file_context.clone());
                         }
                     }
@@ -82,13 +84,11 @@ impl EmbeddingQueue {
     }
 
     fn queue_size(&self) -> usize {
-        println!("EXISTING QUEUE: {:?}", self.queue);
         self.queue.iter().map(|f| f.embeddable_ids.len()).sum()
     }
 
     pub(crate) async fn queue_job(&mut self, job: EmbeddingJob) {
         let mut size = self.queue_size();
-        println!("QUEUE SIZE: {:?}", &size);
         match job {
             EmbeddingJob::Embed { file_context } => {
                 log::debug!(
@@ -98,18 +98,12 @@ impl EmbeddingQueue {
                 let outstanding_ids = file_context.lock().await.document_ids();
                 let mut embeddable_ids = Vec::new();
 
-                println!("OUTSTANDING IDS: {:?}", outstanding_ids);
-
                 for idx in outstanding_ids {
                     size += 1;
                     embeddable_ids.push(idx);
 
-                    println!("EMBEDDABLE IDS: {:?}", &embeddable_ids);
-
                     if size == 10 {
-                        println!("embeddable ids len pre: {:?}", &embeddable_ids.len());
                         let fragment_ids = mem::take(&mut embeddable_ids);
-                        println!("embeddable ids len post: {:?}", &embeddable_ids.len());
                         self.queue.push(FileFragment {
                             file_context: file_context.clone(),
                             embeddable_ids: fragment_ids,

@@ -9,7 +9,7 @@ impl EmbeddingProvider for DummyEmbeddingProvider {
     fn embed(&self, spans: Vec<String>) -> Vec<Embedding> {
         let mut embeddings = Vec::<Embedding>::new();
         for span in spans {
-            embeddings.push([0.32; 526].to_vec());
+            embeddings.push([0.32; 5].to_vec());
         }
 
         embeddings

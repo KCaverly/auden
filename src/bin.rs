@@ -97,7 +97,7 @@ impl Yars for YarsAgent {
                 let search_results = results
                     .iter()
                     .map(|result| SearchResultReply {
-                        id: result.id as i32,
+                        id: result.id.id.to_string(),
                         start_byte: result.start_byte as i32,
                         end_byte: result.end_byte as i32,
                         path: result.path.to_string_lossy().to_string(),
@@ -121,17 +121,33 @@ impl Yars for YarsAgent {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+// #[tokio::main]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     simple_logger::init_with_env().unwrap();
 
     let addr = "[::1]:50051".parse()?;
-    let agent = YarsAgent::new().await?;
 
-    Server::builder()
-        .add_service(YarsServer::new(agent))
-        .serve(addr)
-        .await?;
+    // This is required for surrealdb recursive queries
+    // https://github.com/surrealdb/surrealdb/issues/2920
+    let stack_size = 10 * 1024 * 1024;
+
+    // Stack frames are generally larger in debug mode.
+    #[cfg(debug_assertions)]
+    let stack_size = stack_size * 2;
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(stack_size)
+        .build()
+        .unwrap()
+        .block_on(async {
+            if let Some(agent) = YarsAgent::new().await.ok() {
+                let _ = Server::builder()
+                    .add_service(YarsServer::new(agent))
+                    .serve(addr)
+                    .await;
+            }
+        });
 
     Ok(())
 }

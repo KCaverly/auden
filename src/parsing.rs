@@ -33,7 +33,8 @@ impl FileContext {
         ids
     }
     pub(crate) fn complete(&self) -> bool {
-        !self.embeddings.iter().any(|embed| embed.is_empty())
+        let complete = !self.embeddings.iter().any(|embed| embed.is_empty());
+        complete
     }
 }
 

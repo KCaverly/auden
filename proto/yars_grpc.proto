@@ -32,7 +32,7 @@ message SearchRequest {
 }
 
 message SearchResultReply {
-    int32 id = 1;
+    string id = 1;
     string path = 2;
     int32 start_byte = 3;
     int32 end_byte = 4;
