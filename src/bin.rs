@@ -1,6 +1,8 @@
 use anyhow::anyhow;
+use homedir::get_my_home;
 use tonic::{transport::Server, Request, Response, Status};
 
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -23,12 +25,14 @@ pub struct YarsAgent {
 
 impl YarsAgent {
     pub async fn new() -> anyhow::Result<Self> {
+        let database_dir = get_my_home()?
+            .ok_or(anyhow!("cant find home directory"))?
+            .as_path()
+            .join(".yars")
+            .join("db");
+
         let index = Arc::new(Mutex::new(
-            SemanticIndex::new(
-                PathBuf::from("data/db"),
-                Arc::new(DummyEmbeddingProvider {}),
-            )
-            .await?,
+            SemanticIndex::new(database_dir, Arc::new(DummyEmbeddingProvider {})).await?,
         ));
         anyhow::Ok(YarsAgent { index })
     }
@@ -147,6 +151,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .serve(addr)
                     .await;
             }
+
+            loop {}
         });
 
     Ok(())
