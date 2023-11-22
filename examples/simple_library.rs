@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use yars::semantic_index::SemanticIndex;
@@ -10,7 +11,7 @@ async fn main() {
     let directory = "/home/kcaverly/personal/yars";
 
     if let Some(mut index) = SemanticIndex::new(
-        PathBuf::from("data/db"),
+        fs::canonicalize(PathBuf::from("data/db")).unwrap(),
         Arc::new(DummyEmbeddingProvider {}),
     )
     .await

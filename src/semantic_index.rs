@@ -170,19 +170,13 @@ impl SemanticIndex {
 
         // Create a long-lived background task, which gets finished files and writes them to the
         // database
-        let vector_db = surreal_db::VectorDatabase::initialize().await?;
-
-        // let vector_db = VectorDatabase::initialize(database_dir).await?;
+        let vector_db = surreal_db::VectorDatabase::initialize(database_dir).await?;
         let mut finished_files_rx = long_lived_embedding_queue.finished_files_rx().await;
         tokio::spawn({
             let vector_db = vector_db.clone();
             async move {
                 while let Some(finished_file) = finished_files_rx.recv().await.ok() {
-                    let _ = vector_db
-                        .queue(DatabaseJob::WriteFileAndSpans {
-                            context: finished_file,
-                        })
-                        .await;
+                    vector_db.create_file_and_spans(finished_file).await;
                 }
             }
         });
