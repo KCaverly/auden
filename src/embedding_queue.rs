@@ -42,21 +42,28 @@ impl EmbeddingQueue {
                         }
                     }
 
-                    let embeddings = provider.embed(spans);
+                    let embeddings = provider.embed(spans).await;
 
-                    // Update File Context with Completed Embeddings
-                    let mut i = 0;
-                    for fragment in &queue {
-                        let mut unlocked = fragment.file_context.lock().await;
-                        for idx in &fragment.embeddable_ids {
-                            unlocked.embeddings[*idx] = embeddings[i].clone();
+                    match embeddings {
+                        Ok(embeddings) => {
+                            // Update File Context with Completed Embeddings
+                            let mut i = 0;
+                            for fragment in &queue {
+                                let mut unlocked = fragment.file_context.lock().await;
+                                for idx in &fragment.embeddable_ids {
+                                    unlocked.embeddings[*idx] = embeddings[i].clone();
+                                }
+                                i += 1;
+
+                                let complete = unlocked.complete();
+                                drop(unlocked);
+                                if complete {
+                                    let _ = finished_files_tx.send(fragment.file_context.clone());
+                                }
+                            }
                         }
-                        i += 1;
-
-                        let complete = unlocked.complete();
-                        drop(unlocked);
-                        if complete {
-                            let _ = finished_files_tx.send(fragment.file_context.clone());
+                        Err(err) => {
+                            log::error!("{:?}", err);
                         }
                     }
                 }

@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use homedir::get_my_home;
 use tonic::{transport::Server, Request, Response, Status};
 
-use auden::embedding::DummyEmbeddingProvider;
+use auden::embedding::FakeEmbeddingProvider;
 use auden::semantic_index::IndexingStatus;
 use auden::semantic_index::SemanticIndex;
 use auden_grpc::auden_server::{Auden, AudenServer};
@@ -10,7 +10,6 @@ use auden_grpc::{
     IndexReply, IndexRequest, SearchReply, SearchRequest, SearchResultReply, StatusReply,
     StatusRequest,
 };
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -32,7 +31,7 @@ impl AudenAgent {
             .join("db");
 
         let index = Arc::new(Mutex::new(
-            SemanticIndex::new(database_dir, Arc::new(DummyEmbeddingProvider {})).await?,
+            SemanticIndex::new(database_dir, Arc::new(FakeEmbeddingProvider {})).await?,
         ));
         anyhow::Ok(AudenAgent { index })
     }

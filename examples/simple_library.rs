@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
 
-use auden::embedding::DummyEmbeddingProvider;
+use auden::embedding::FakeEmbeddingProvider;
 
 async fn run_example() {
     simple_logger::init_with_env().unwrap();
@@ -13,7 +13,7 @@ async fn run_example() {
 
     let directory = "/home/kcaverly/personal/auden";
 
-    if let Some(mut index) = SemanticIndex::new(tmp_path, Arc::new(DummyEmbeddingProvider {}))
+    if let Some(mut index) = SemanticIndex::new(tmp_path, Arc::new(FakeEmbeddingProvider {}))
         .await
         .ok()
     {

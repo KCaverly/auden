@@ -277,6 +277,7 @@ impl SemanticIndex {
         if let Some(embedding) = self
             .embedding_provider
             .embed(vec![search_query.to_string()])
+            .await?
             .get(0)
         {
             self.vector_db
