@@ -1,6 +1,8 @@
 # auden
 
-![](logo.png)
+<p align="center">
+  <img src="logo.png" width="600"/>
+</p>
 
 *yet another retrieval server*  
 *lsp but for retrieval*  
