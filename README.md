@@ -1,12 +1,10 @@
-# auden
-
 <p align="center">
   <img src="logo.png" width="600"/>
-  <p><i>yet another retrieval server</i></p>
-  <p><i>lsp but for retrieval</i></p>
 </p>
 
-## Embeddable Engine for On-Device Retrieval Applications
+<p align="center"><i>yet another retrieval server</i></p>
+
+## Embedded Engine for On-Device Retrieval Applications
 
 This is very much a work in progress project, in which I am hoping to create a standalone directory based retrieval engine in Rust. The hope is that this can either be leveraged as a package directly inside another Rust application to manage on-device retrieval, or run as a binary and exposed over something like gRPC.
 
