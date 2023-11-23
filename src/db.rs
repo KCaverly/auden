@@ -1,4 +1,3 @@
-use crate::embedding::Embedding;
 use crate::parsing::FileContext;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -16,7 +15,7 @@ use tokio::sync::{mpsc, Mutex};
 pub(crate) enum DatabaseJob {
     GetEmbeddingsForDirectory {
         path: PathBuf,
-        sender: oneshot::Sender<anyhow::Result<HashMap<Vec<u8>, Embedding>>>,
+        sender: oneshot::Sender<anyhow::Result<HashMap<Vec<u8>, Vec<f32>>>>,
     },
     GetOrCreateDirectory {
         path: PathBuf,
@@ -28,7 +27,7 @@ pub(crate) enum DatabaseJob {
     },
     SearchDirectory {
         path: PathBuf,
-        embedding: Embedding,
+        embedding: Vec<f32>,
         n: usize,
         sender: oneshot::Sender<anyhow::Result<Vec<SearchResult>>>,
     },
@@ -56,7 +55,7 @@ impl fmt::Debug for DatabaseJob {
 #[derive(Debug, Deserialize)]
 struct EmbeddingBySha {
     sha: Vec<u8>,
-    embedding: Embedding,
+    embedding: Vec<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,7 +177,6 @@ impl VectorDatabase {
                                     let result = search_directory(&db, &path, &embedding, n).await;
                                     let _ = sender.send(result);
                                 }
-                                _ => {}
                             }
                         }
                     }
@@ -213,8 +211,8 @@ impl VectorDatabase {
     pub(crate) async fn get_embeddings_for_directory(
         &self,
         path: &PathBuf,
-    ) -> anyhow::Result<HashMap<Vec<u8>, Embedding>> {
-        let (sender, receiver) = oneshot::channel::<anyhow::Result<HashMap<Vec<u8>, Embedding>>>();
+    ) -> anyhow::Result<HashMap<Vec<u8>, Vec<f32>>> {
+        let (sender, receiver) = oneshot::channel::<anyhow::Result<HashMap<Vec<u8>, Vec<f32>>>>();
         let job = DatabaseJob::GetEmbeddingsForDirectory {
             path: path.clone(),
             sender,
@@ -227,7 +225,7 @@ impl VectorDatabase {
     pub(crate) async fn get_top_neighbours(
         &self,
         directory: PathBuf,
-        embedding: &Embedding,
+        embedding: &Vec<f32>,
         n: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let (sender, receiver) = oneshot::channel::<anyhow::Result<Vec<SearchResult>>>();
@@ -256,11 +254,11 @@ impl VectorDatabase {
 async fn get_embeddings_for_directory(
     db: &Surreal<surrealdb::engine::local::Db>,
     path: &PathBuf,
-) -> anyhow::Result<HashMap<Vec<u8>, Embedding>> {
+) -> anyhow::Result<HashMap<Vec<u8>, Vec<f32>>> {
     let mut resp = db.query(format!("SELECT sha, embedding FROM span WHERE <-contains<-file<-owns<-(directory WHERE path = '{}')", path.to_string_lossy())).await?;
 
     let rows: Vec<EmbeddingBySha> = resp.take(0)?;
-    let mut map = HashMap::<Vec<u8>, Embedding>::new();
+    let mut map = HashMap::<Vec<u8>, Vec<f32>>::new();
     for row in rows {
         map.insert(row.sha, row.embedding);
     }
@@ -357,8 +355,6 @@ async fn delete_file_and_spans(
         "DELETE span WHERE <-contains<-(file WHERE path = '{}')",
         path.to_string_lossy()
     );
-    // Delete Spans
-    let query = format!("DELETE file WHERE path = '{}'", path.to_string_lossy());
     let result = db.query(query).await?;
     result.check()?;
 
@@ -415,7 +411,7 @@ async fn create_file_and_spans(
 async fn search_directory(
     db: &Surreal<surrealdb::engine::local::Db>,
     path: &PathBuf,
-    embedding: &Embedding,
+    embedding: &Vec<f32>,
     n: usize,
 ) -> anyhow::Result<Vec<SearchResult>> {
     let query = format!(

@@ -1,5 +1,6 @@
-use crate::embedding::{Embedding, EmbeddingProvider};
 use crate::parsing::FileContext;
+use anyhow::anyhow;
+use llm_chain::traits::Embeddings;
 use std::mem;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
@@ -25,7 +26,7 @@ pub(crate) struct EmbeddingQueue {
 }
 
 impl EmbeddingQueue {
-    pub(crate) fn new(provider: Arc<dyn EmbeddingProvider>) -> Self {
+    pub(crate) fn new(provider: Arc<llm_chain_openai::embeddings::Embeddings>) -> Self {
         let (finished_files_tx, _) = broadcast::channel::<Arc<Mutex<FileContext>>>(10000);
         // Create a long lived task to embed and send off completed files
         let (embed_tx, mut receiver) = mpsc::channel::<Vec<FileFragment>>(10000);
@@ -42,7 +43,7 @@ impl EmbeddingQueue {
                         }
                     }
 
-                    let embeddings = provider.embed(spans).await;
+                    let embeddings = provider.embed_texts(spans).await;
 
                     match embeddings {
                         Ok(embeddings) => {
@@ -63,7 +64,7 @@ impl EmbeddingQueue {
                             }
                         }
                         Err(err) => {
-                            log::error!("{:?}", err);
+                            log::error!("{:?}", anyhow!(err));
                         }
                     }
                 }

@@ -2,7 +2,6 @@ use anyhow::anyhow;
 use homedir::get_my_home;
 use tonic::{transport::Server, Request, Response, Status};
 
-use auden::embedding::FakeEmbeddingProvider;
 use auden::semantic_index::IndexingStatus;
 use auden::semantic_index::SemanticIndex;
 use auden_grpc::auden_server::{Auden, AudenServer};
@@ -30,9 +29,7 @@ impl AudenAgent {
             .join(".auden")
             .join("db");
 
-        let index = Arc::new(Mutex::new(
-            SemanticIndex::new(database_dir, Arc::new(FakeEmbeddingProvider {})).await?,
-        ));
+        let index = Arc::new(Mutex::new(SemanticIndex::new(database_dir).await?));
         anyhow::Ok(AudenAgent { index })
     }
 }

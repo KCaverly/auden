@@ -1,9 +1,9 @@
 use crate::db::{SearchResult, VectorDatabase};
-use crate::embedding::{Embedding, EmbeddingProvider};
 use crate::embedding_queue::{EmbeddingJob, EmbeddingQueue};
 use crate::languages::{load_languages, LanguageConfig, LanguageRegistry};
 use crate::parsing::FileContextParser;
 use anyhow::anyhow;
+use llm_chain::traits::Embeddings;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -92,31 +92,20 @@ impl IndexingStatus {
 pub struct SemanticIndex {
     vector_db: VectorDatabase,
     languages: LanguageRegistry,
-    parse_sender: mpsc::Sender<
-        Arc<(
-            FileDetails,
-            LanguageConfig,
-            Arc<HashMap<Vec<u8>, Embedding>>,
-        )>,
-    >,
-    embedding_provider: Arc<dyn EmbeddingProvider>,
+    parse_sender: mpsc::Sender<Arc<(FileDetails, LanguageConfig, Arc<HashMap<Vec<u8>, Vec<f32>>>)>>,
     directory_state: HashMap<PathBuf, Arc<DirectoryState>>,
+    embedding_provider: Arc<llm_chain_openai::embeddings::Embeddings>,
 }
 
 impl SemanticIndex {
-    pub async fn new(
-        database_dir: PathBuf,
-        embedding_provider: Arc<dyn EmbeddingProvider>,
-    ) -> anyhow::Result<Self> {
+    pub async fn new(database_dir: PathBuf) -> anyhow::Result<Self> {
+        let embedding_provider = Arc::new(llm_chain_openai::embeddings::Embeddings::default());
+
         let (embedding_sender, mut embedding_receiver) = mpsc::channel::<EmbeddingJob>(10000);
 
         // Create a long-lived background task, which parses files
         let (parse_sender, mut parse_receiver) = mpsc::channel::<
-            Arc<(
-                FileDetails,
-                LanguageConfig,
-                Arc<HashMap<Vec<u8>, Embedding>>,
-            )>,
+            Arc<(FileDetails, LanguageConfig, Arc<HashMap<Vec<u8>, Vec<f32>>>)>,
         >(10000);
         tokio::spawn(async move {
             while let Some(file_to_parse) = parse_receiver.recv().await {
@@ -174,7 +163,13 @@ impl SemanticIndex {
             let vector_db = vector_db.clone();
             async move {
                 while let Some(finished_file) = finished_files_rx.recv().await.ok() {
-                    vector_db.create_file_and_spans(finished_file).await;
+                    let result = vector_db.create_file_and_spans(finished_file).await;
+                    match result {
+                        Ok(_) => {}
+                        Err(err) => {
+                            log::error!("{:?}", err)
+                        }
+                    }
                 }
             }
         });
@@ -184,8 +179,8 @@ impl SemanticIndex {
             vector_db,
             languages,
             parse_sender,
-            embedding_provider,
             directory_state: HashMap::new(),
+            embedding_provider,
         })
     }
 
@@ -193,7 +188,7 @@ impl SemanticIndex {
         &self,
         directory_state: Arc<DirectoryState>,
         directory: PathBuf,
-        existing_embeddings: Arc<HashMap<Vec<u8>, Embedding>>,
+        existing_embeddings: Arc<HashMap<Vec<u8>, Vec<f32>>>,
     ) -> anyhow::Result<()> {
         fn is_hidden(entry: &DirEntry) -> bool {
             entry
@@ -276,12 +271,12 @@ impl SemanticIndex {
 
         if let Some(embedding) = self
             .embedding_provider
-            .embed(vec![search_query.to_string()])
-            .await?
-            .get(0)
+            .embed_query(search_query.to_string())
+            .await
+            .ok()
         {
             self.vector_db
-                .get_top_neighbours(directory, embedding, n)
+                .get_top_neighbours(directory, &embedding, n)
                 .await
         } else {
             Err(anyhow!("embedding provider failed to embed search query"))

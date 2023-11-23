@@ -1,10 +1,8 @@
-use crate::embedding::{self, Embedding};
 use crate::languages::LanguageConfig;
 use crate::semantic_index::FileDetails;
 use anyhow;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::ops::Range;
 use tree_sitter::QueryCursor;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -19,7 +17,7 @@ pub(crate) struct ContextDocument {
 pub(crate) struct FileContext {
     pub(crate) details: FileDetails,
     pub(crate) documents: Vec<ContextDocument>,
-    pub(crate) embeddings: Vec<Embedding>,
+    pub(crate) embeddings: Vec<Vec<f32>>,
 }
 
 impl FileContext {
@@ -61,7 +59,7 @@ impl FileContextParser {
         let embeddings = documents
             .iter()
             .map(|_| Vec::new())
-            .collect::<Vec<Embedding>>();
+            .collect::<Vec<Vec<f32>>>();
 
         anyhow::Ok(FileContext {
             details: file_details.clone(),

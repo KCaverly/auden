@@ -40,7 +40,7 @@ impl LanguageConfig {
         let language = self.get_treesitter_language()?;
 
         let mut parser = Parser::new();
-        parser.set_language(language);
+        parser.set_language(language)?;
         anyhow::Ok(parser)
     }
 

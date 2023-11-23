@@ -1,5 +1,5 @@
 mod db;
-pub mod embedding;
+// pub mod embedding;
 mod embedding_queue;
 mod languages;
 mod parsing;
