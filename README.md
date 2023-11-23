@@ -2,10 +2,9 @@
 
 <p align="center">
   <img src="logo.png" width="600"/>
+  <p><i>yet another retrieval server</i></p>
+  <p><i>lsp but for retrieval</i></p>
 </p>
-
-*yet another retrieval server*  
-*lsp but for retrieval*  
 
 ## Embeddable Engine for On-Device Retrieval Applications
 
