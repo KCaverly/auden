@@ -1,8 +1,9 @@
 use crate::parsing::FileContext;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::iter::FromIterator;
 use std::path::PathBuf;
 use std::sync::Arc;
 use surrealdb::engine::local::RocksDb;
@@ -31,6 +32,14 @@ pub(crate) enum DatabaseJob {
         n: usize,
         sender: oneshot::Sender<anyhow::Result<Vec<SearchResult>>>,
     },
+    GetPathsForDirectory {
+        path: PathBuf,
+        sender: oneshot::Sender<anyhow::Result<HashSet<PathBuf>>>,
+    },
+    DeletePathAndSpans {
+        path: PathBuf,
+        sender: oneshot::Sender<anyhow::Result<()>>,
+    },
 }
 
 impl fmt::Debug for DatabaseJob {
@@ -47,6 +56,12 @@ impl fmt::Debug for DatabaseJob {
             }
             DatabaseJob::GetEmbeddingsForDirectory { .. } => {
                 write!(f, "DatabaseJob::GetEmbeddingsForDirectory",)
+            }
+            DatabaseJob::GetPathsForDirectory { .. } => {
+                write!(f, "DatabaseJob::GetPathsForDirectory",)
+            }
+            DatabaseJob::DeletePathAndSpans { .. } => {
+                write!(f, "DatabaseJob::DeletePathAndSpans",)
             }
         }
     }
@@ -177,6 +192,14 @@ impl VectorDatabase {
                                     let result = search_directory(&db, &path, &embedding, n).await;
                                     let _ = sender.send(result);
                                 }
+                                DatabaseJob::GetPathsForDirectory { path, sender } => {
+                                    let result = get_files_for_directory(&db, &path).await;
+                                    let _ = sender.send(result);
+                                }
+                                DatabaseJob::DeletePathAndSpans { path, sender } => {
+                                    let result = delete_file_and_spans(&db, &path).await;
+                                    let _ = sender.send(result);
+                                }
                             }
                         }
                     }
@@ -188,6 +211,20 @@ impl VectorDatabase {
         });
 
         anyhow::Ok(VectorDatabase { executor })
+    }
+
+    pub(crate) async fn get_files_for_directory(
+        &self,
+        path: &PathBuf,
+    ) -> anyhow::Result<HashSet<PathBuf>> {
+        let (sender, receiver) = oneshot::channel();
+        let job = DatabaseJob::GetPathsForDirectory {
+            path: path.clone(),
+            sender,
+        };
+
+        self.queue(job).await?;
+        receiver.await?
     }
 
     pub(crate) async fn get_or_create_directory(&self, path: &PathBuf) -> anyhow::Result<String> {
@@ -206,6 +243,15 @@ impl VectorDatabase {
     pub(crate) async fn queue(&self, database_job: DatabaseJob) -> anyhow::Result<()> {
         log::debug!("sending database job for execution: {:?}", database_job);
         anyhow::Ok(self.executor.send(database_job).await?)
+    }
+    pub(crate) async fn delete_file(&self, path: &PathBuf) -> anyhow::Result<()> {
+        let (sender, receiver) = oneshot::channel::<anyhow::Result<()>>();
+        let job = DatabaseJob::DeletePathAndSpans {
+            path: path.clone(),
+            sender,
+        };
+        self.queue(job).await?;
+        receiver.await?
     }
 
     pub(crate) async fn get_embeddings_for_directory(
@@ -249,6 +295,25 @@ impl VectorDatabase {
         self.queue(job).await?;
         receiver.await?
     }
+}
+
+async fn get_files_for_directory(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    path: &PathBuf,
+) -> anyhow::Result<HashSet<PathBuf>> {
+    let mut resp = db
+        .query(format!(
+            "SELECT path FROM file WHERE <-owns<-(directory WHERE path = '{}')",
+            path.to_string_lossy()
+        ))
+        .await?;
+
+    let results: Vec<PathBuf> = resp.take(0)?;
+    dbg!(&results);
+
+    let results = HashSet::from_iter(results.iter().map(|x| x.clone()));
+
+    anyhow::Ok(results)
 }
 
 async fn get_embeddings_for_directory(

@@ -190,6 +190,8 @@ impl SemanticIndex {
         directory: PathBuf,
         existing_embeddings: Arc<HashMap<Vec<u8>, Vec<f32>>>,
     ) -> anyhow::Result<()> {
+        let mut existing_paths = self.vector_db.get_files_for_directory(&directory).await?;
+
         fn is_hidden(entry: &DirEntry) -> bool {
             entry
                 .file_name()
@@ -206,7 +208,7 @@ impl SemanticIndex {
                 .unwrap_or(false)
         }
 
-        let walker = WalkDir::new(directory).into_iter();
+        let walker = WalkDir::new(directory.clone()).into_iter();
         for entry in walker.filter_entry(|e| !is_hidden(e) && !is_target_dir(e)) {
             if let Ok(entry) = entry {
                 let path = entry.path();
@@ -215,6 +217,8 @@ impl SemanticIndex {
                         path.extension().and_then(|extension| extension.to_str())
                     {
                         if let Some(config) = self.languages.get_config_from_extension(extension) {
+                            existing_paths.remove(&path.to_path_buf());
+
                             let file_details = FileDetails {
                                 path: path.to_path_buf(),
                                 directory_state: directory_state.clone(),
@@ -230,6 +234,10 @@ impl SemanticIndex {
                     }
                 }
             }
+        }
+
+        for path in existing_paths {
+            self.vector_db.delete_file(&path).await?;
         }
 
         anyhow::Ok(())
