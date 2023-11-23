@@ -14,6 +14,10 @@ use tokio::sync::oneshot;
 use tokio::sync::{mpsc, Mutex};
 
 pub(crate) enum DatabaseJob {
+    GetEmbeddingsForDirectory {
+        path: PathBuf,
+        sender: oneshot::Sender<anyhow::Result<HashMap<Vec<u8>, Embedding>>>,
+    },
     GetOrCreateDirectory {
         path: PathBuf,
         sender: oneshot::Sender<anyhow::Result<String>>,
@@ -42,8 +46,17 @@ impl fmt::Debug for DatabaseJob {
             DatabaseJob::SearchDirectory { .. } => {
                 write!(f, "DatabaseJob::SearchDirectory",)
             }
+            DatabaseJob::GetEmbeddingsForDirectory { .. } => {
+                write!(f, "DatabaseJob::GetEmbeddingsForDirectory",)
+            }
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddingBySha {
+    sha: Vec<u8>,
+    embedding: Embedding,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,13 +98,6 @@ struct Path {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct DirectoryId {
-    tb: Thing,
-    #[allow(dead_code)]
-    id: Thing,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct Record {
     #[allow(dead_code)]
     id: Thing,
@@ -114,7 +120,7 @@ impl VectorDatabase {
 
                 match Surreal::new::<RocksDb>(location).await {
                     Ok(db) => {
-                        db.use_ns(DATABASE_NAME).use_db(DATABASE_NAME).await;
+                        let _ = db.use_ns(DATABASE_NAME).use_db(DATABASE_NAME).await;
 
                         // Create Tables
                         db.query(
@@ -151,6 +157,10 @@ impl VectorDatabase {
 
                         while let Some(job) = receiver.recv().await {
                             match job {
+                                DatabaseJob::GetEmbeddingsForDirectory { path, sender } => {
+                                    let result = get_embeddings_for_directory(&db, &path).await;
+                                    let _ = sender.send(result);
+                                }
                                 DatabaseJob::GetOrCreateDirectory { path, sender } => {
                                     let result = get_or_create_directory(&db, &path).await;
                                     let _ = sender.send(result);
@@ -204,7 +214,14 @@ impl VectorDatabase {
         &self,
         path: &PathBuf,
     ) -> anyhow::Result<HashMap<Vec<u8>, Embedding>> {
-        anyhow::Ok(HashMap::new())
+        let (sender, receiver) = oneshot::channel::<anyhow::Result<HashMap<Vec<u8>, Embedding>>>();
+        let job = DatabaseJob::GetEmbeddingsForDirectory {
+            path: path.clone(),
+            sender,
+        };
+
+        self.queue(job).await?;
+        receiver.await?
     }
 
     pub(crate) async fn get_top_neighbours(
@@ -234,6 +251,23 @@ impl VectorDatabase {
         self.queue(job).await?;
         receiver.await?
     }
+}
+
+async fn get_embeddings_for_directory(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    path: &PathBuf,
+) -> anyhow::Result<HashMap<Vec<u8>, Embedding>> {
+    let mut resp = db.query(format!("SELECT sha, embedding FROM span WHERE <-contains<-file<-owns<-(directory WHERE path = '{}')", path.to_string_lossy())).await?;
+
+    let rows: Vec<EmbeddingBySha> = resp.take(0)?;
+    let mut map = HashMap::<Vec<u8>, Embedding>::new();
+    for row in rows {
+        map.insert(row.sha, row.embedding);
+    }
+
+    dbg!(&map);
+
+    anyhow::Ok(map)
 }
 
 async fn get_or_create_directory(
