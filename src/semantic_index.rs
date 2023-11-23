@@ -1,10 +1,8 @@
-// use crate::db::{DatabaseJob, SearchResult, VectorDatabase};
+use crate::db::{SearchResult, VectorDatabase};
 use crate::embedding::{Embedding, EmbeddingProvider};
 use crate::embedding_queue::{EmbeddingJob, EmbeddingQueue};
 use crate::languages::{load_languages, LanguageConfig, LanguageRegistry};
 use crate::parsing::FileContextParser;
-use crate::surreal_db;
-use crate::surreal_db::{DatabaseJob, SearchResult, VectorDatabase};
 use anyhow::anyhow;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -170,7 +168,7 @@ impl SemanticIndex {
 
         // Create a long-lived background task, which gets finished files and writes them to the
         // database
-        let vector_db = surreal_db::VectorDatabase::initialize(database_dir).await?;
+        let vector_db = VectorDatabase::initialize(database_dir).await?;
         let mut finished_files_rx = long_lived_embedding_queue.finished_files_rx().await;
         tokio::spawn({
             let vector_db = vector_db.clone();

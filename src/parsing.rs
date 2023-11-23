@@ -123,37 +123,34 @@ mod tests {
         let language_registry = load_languages();
         let rust_config = language_registry.get_config_from_extension("rs").unwrap();
         let test_string = "
-        struct CodeContextParser {}
+struct CodeContextParser {}
 
-        impl CodeContextParser {
-            pub fn parse(content: &str) -> anyhow::Result<()> {
-                todo!();
-            }
-        }
+impl CodeContextParser {
+    pub fn parse(content: &str) -> anyhow::Result<()> {
+        todo!();
+    }
+}
         ";
 
         let documents = FileContextParser::parse_content(test_string, &rust_config).unwrap();
+        let a = "impl CodeContextParser {
+    pub fn parse(content: &str) -> anyhow::Result<()> {
+        todo!();
+    }
+}"
+        .to_string();
         let test_documents = vec![
             ContextDocument {
-                start_byte: 9,
-                end_byte: 36,
+                start_byte: 1,
+                end_byte: 28,
                 content: "struct CodeContextParser {}".to_string(),
                 sha: sha("struct CodeContextParser {}"),
             },
             ContextDocument {
-                start_byte: 46,
-                end_byte: 183,
-                content: "impl CodeContextParser {
-            pub fn parse(content: &str) -> anyhow::Result<()> {
-                todo!();
-            }
-        }"
-                .to_string(),
-                sha: sha("impl CodecontextParser {
-            pub fn parse(content: &str) -> anyhow::Result<()> {
-                todo!();
-            }
-        }"),
+                start_byte: 30,
+                end_byte: 135,
+                content: a.clone(),
+                sha: sha(a.as_str()),
             },
         ];
 

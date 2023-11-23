@@ -1,281 +1,208 @@
-use std::time::Duration;
-
-use pg_embed::pg_enums::PgAuthMethod;
-use pg_embed::pg_fetch::{PgFetchSettings, PG_V15};
-use pg_embed::postgres::{PgEmbed, PgSettings};
-use pgvector::Vector;
-use sqlx::pool::PoolConnection;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{Executor, Pool, Postgres, Row};
+use crate::embedding::Embedding;
+use crate::parsing::FileContext;
+use anyhow::anyhow;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use surrealdb::engine::local::RocksDb;
+use surrealdb::opt::RecordId;
+use surrealdb::sql::Thing;
+use surrealdb::Surreal;
+use tokio::sync::oneshot;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::embedding::Embedding;
-use crate::parsing::FileContext;
+pub(crate) enum DatabaseJob {
+    GetEmbeddingsForDirectory {
+        path: PathBuf,
+        sender: oneshot::Sender<anyhow::Result<HashMap<Vec<u8>, Embedding>>>,
+    },
+    GetOrCreateDirectory {
+        path: PathBuf,
+        sender: oneshot::Sender<anyhow::Result<String>>,
+    },
+    CreateFileAndSpans {
+        context: Arc<Mutex<FileContext>>,
+        sender: oneshot::Sender<anyhow::Result<()>>,
+    },
+    SearchDirectory {
+        path: PathBuf,
+        embedding: Embedding,
+        n: usize,
+        sender: oneshot::Sender<anyhow::Result<Vec<SearchResult>>>,
+    },
+}
 
-const DATABASE_NAME: &str = "yars";
+impl fmt::Debug for DatabaseJob {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DatabaseJob::GetOrCreateDirectory { .. } => {
+                write!(f, "DatabaseJob::CreateDirectory",)
+            }
+            DatabaseJob::CreateFileAndSpans { .. } => {
+                write!(f, "DatabaseJob::WriteFileAndSpans",)
+            }
+            DatabaseJob::SearchDirectory { .. } => {
+                write!(f, "DatabaseJob::SearchDirectory",)
+            }
+            DatabaseJob::GetEmbeddingsForDirectory { .. } => {
+                write!(f, "DatabaseJob::GetEmbeddingsForDirectory",)
+            }
+        }
+    }
+}
 
-// pub(crate) enum DatabaseJob {
-//     WriteFileAndSpans { context: Arc<Mutex<FileContext>> },
-// }
-//
-// impl fmt::Debug for DatabaseJob {
-//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-//         match self {
-//             DatabaseJob::WriteFileAndSpans { .. } => {
-//                 write!(f, "DatabaseJob::WriteFileAndSpans",)
-//             }
-//         }
-//     }
-// }
+#[derive(Debug, Deserialize)]
+struct EmbeddingBySha {
+    sha: Vec<u8>,
+    embedding: Embedding,
+}
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct SearchResult {
-    pub id: usize,
+    pub id: RecordId,
     pub path: PathBuf,
     pub start_byte: usize,
     pub end_byte: usize,
+    pub similarity: f32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingResult {
+    pub id: usize,
+    pub embedding: Vec<f32>,
+}
+
+#[derive(PartialEq, Debug, Serialize, Deserialize)]
+struct Span {
+    start_byte: usize,
+    end_byte: usize,
+    sha: Vec<u8>,
+    embedding: Vec<f32>,
+}
+
+#[derive(Debug, Serialize)]
+struct Directory {
+    path: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+struct File {
+    path: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+struct Path {
+    id: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Record {
+    #[allow(dead_code)]
+    id: Thing,
 }
 
 #[derive(Clone)]
 pub(crate) struct VectorDatabase {
-    postgres_handle: Arc<PgEmbed>,
-    pool: Pool<Postgres>,
     executor: mpsc::Sender<DatabaseJob>,
 }
 
 impl VectorDatabase {
-    pub(crate) async fn initialize(database_dir: PathBuf) -> anyhow::Result<VectorDatabase> {
-        log::debug!("initializing database at {:?}", database_dir);
-        let pg_settings = PgSettings {
-            database_dir,
-            port: 5432,
-            user: "postgres".to_string(),
-            password: "password".to_string(),
-            auth_method: PgAuthMethod::Plain,
-            persistent: true,
-            timeout: Some(Duration::from_secs(15)),
-            migration_dir: None,
-        };
+    pub(crate) async fn initialize(database_dir: PathBuf) -> anyhow::Result<Self> {
+        const DATABASE_NAME: &str = "yars";
 
-        let fetch_settings = PgFetchSettings {
-            version: PG_V15,
-            ..Default::default()
-        };
-
-        let mut pg = PgEmbed::new(pg_settings, fetch_settings).await?;
-        pg.setup().await?;
-        pg.start_db().await?;
-        // Currently, I am just dropping the database on each run
-        // this is not ideal
-        if !pg.database_exists(DATABASE_NAME).await? {
-            pg.create_database(DATABASE_NAME).await?;
-        } else {
-            pg.drop_database(DATABASE_NAME).await?;
-            pg.create_database(DATABASE_NAME).await?;
-        }
-        let database_uri = pg.full_db_uri(DATABASE_NAME);
-
-        log::debug!("database initialized appropriately");
-
-        let pool = PgPoolOptions::new()
-            .max_connections(10)
-            .connect(database_uri.as_str())
-            .await?;
-
-        // Initialize pg_embedding extension
-        pool.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            .await?;
-
-        // Create Tables
-        log::debug!("creating tables in database");
-        pool.execute(
-            "
-                CREATE TABLE IF NOT EXISTS directory (
-                    id SERIAL PRIMARY KEY,
-                    path VARCHAR(255) NOT NULL
-                )",
-        )
-        .await?;
-
-        pool.execute(
-            "
-            CREATE TABLE IF NOT EXISTS file (
-                id SERIAL PRIMARY KEY,
-                directory_id INT,
-                path VARCHAR(255) NOT NULL,
-                CONSTRAINT fk_directory
-                    FOREIGN KEY(directory_id)
-                        REFERENCES directory(id)
-            )",
-        )
-        .await?;
-
-        pool.execute(
-            "CREATE TABLE IF NOT EXISTS span (
-                id SERIAL PRIMARY KEY,
-                file_id INT,
-                start_byte INT NOT NULL,
-                end_byte INT NOT NULL,
-                sha BYTEA NOT NULL,
-                embedding vector,
-                CONSTRAINT fk_file
-                    FOREIGN KEY(file_id)
-                        REFERENCES file(id)
-            )",
-        )
-        .await?;
-
-        log::debug!("tables created appropriately in database");
-
-        let (executor, mut receiver) = mpsc::channel::<DatabaseJob>(10000);
+        let (executor, mut receiver) = mpsc::channel::<DatabaseJob>(1000);
         tokio::spawn({
-            let pool = pool.clone();
             async move {
-                while let Some(job) = receiver.recv().await {
-                    log::debug!("receiver db job: {:?}", job);
-                    match job {
-                        DatabaseJob::WriteFileAndSpans { context } => {
-                            let file_context = context.lock().await;
-                            let file_id = VectorDatabase::get_or_create_file(
-                                &pool,
-                                &file_context.details.path,
-                                file_context.details.directory_state.id,
-                            )
-                            .await;
+                let location = database_dir.join("temp.db");
+                log::debug!("initializing surrealdb at {:?}", location.clone());
 
-                            if let Ok(file_id) = file_id {
-                                let mut data = Vec::new();
-                                for (embedding, document) in
-                                    file_context.embeddings.iter().zip(&file_context.documents)
-                                {
-                                    data.push((
-                                        document.start_byte,
-                                        document.end_byte,
-                                        document.sha.clone(),
-                                        embedding,
-                                    ));
+                match Surreal::new::<RocksDb>(location).await {
+                    Ok(db) => {
+                        let _ = db.use_ns(DATABASE_NAME).use_db(DATABASE_NAME).await;
+
+                        // Create Tables
+                        db.query(
+                            "
+                            DEFINE TABLE directory SCHEMAFULL;
+                            DEFINE FIELD path ON TABLE directory TYPE string;
+                            ",
+                        )
+                        .await
+                        .unwrap();
+
+                        db.query(
+                            "
+                            DEFINE TABLE file SCHEMAFULL;
+                            DEFINE FIELD path ON TABLE file TYPE string;
+                        ",
+                        )
+                        .await
+                        .unwrap();
+
+                        db.query(
+                            "
+                            DEFINE TABLE span SCHEMAFULL;
+                            DEFINE FIELD start_byte ON TABLE span TYPE int;
+                            DEFINE FIELD end_byte ON TABLE span TYPE int;
+                            DEFINE FIELD sha ON TABLE span TYPE array<int>;
+                            DEFINE FIELD sha.* ON TABLE span TYPE int;
+                            DEFINE FIELD embedding ON TABLE span TYPE array<float>;
+                            DEFINE FIELD embedding.* ON TABLE span TYPE float;
+                            ",
+                        )
+                        .await
+                        .unwrap();
+
+                        while let Some(job) = receiver.recv().await {
+                            match job {
+                                DatabaseJob::GetEmbeddingsForDirectory { path, sender } => {
+                                    let result = get_embeddings_for_directory(&db, &path).await;
+                                    let _ = sender.send(result);
                                 }
-                                let _ =
-                                    VectorDatabase::get_or_create_spans(&pool, file_id, data).await;
-                                log::debug!("wrote file {:?}", file_id);
+                                DatabaseJob::GetOrCreateDirectory { path, sender } => {
+                                    let result = get_or_create_directory(&db, &path).await;
+                                    let _ = sender.send(result);
+                                }
+                                DatabaseJob::CreateFileAndSpans { context, sender } => {
+                                    let result = create_file_and_spans(&db, context.clone()).await;
+                                    let _ = sender.send(result);
+                                }
+                                DatabaseJob::SearchDirectory {
+                                    path,
+                                    embedding,
+                                    n,
+                                    sender,
+                                } => {
+                                    let result = search_directory(&db, &path, &embedding, n).await;
+                                    let _ = sender.send(result);
+                                }
+                                _ => {}
                             }
                         }
+                    }
+                    Err(err) => {
+                        panic!("{:?}", err);
                     }
                 }
             }
         });
 
-        anyhow::Ok(VectorDatabase {
-            postgres_handle: Arc::new(pg),
-            pool,
-            executor,
-        })
+        anyhow::Ok(VectorDatabase { executor })
     }
 
-    pub(crate) async fn get_conn(&self) -> anyhow::Result<PoolConnection<Postgres>> {
-        anyhow::Ok(self.pool.acquire().await?)
-    }
+    pub(crate) async fn get_or_create_directory(&self, path: &PathBuf) -> anyhow::Result<String> {
+        let (sender, receiver) = oneshot::channel();
+        let job = DatabaseJob::GetOrCreateDirectory {
+            path: path.clone(),
+            sender,
+        };
 
-    async fn get_or_create_file(
-        pool: &Pool<Postgres>,
-        path: &PathBuf,
-        directory_id: usize,
-    ) -> anyhow::Result<usize> {
-        let mut conn = pool.acquire().await?;
-        let r = conn
-            .fetch_one(
-                format!(
-                    "INSERT INTO file (directory_id, path) VALUES ({}, '{}') RETURNING id",
-                    directory_id,
-                    path.as_path().to_string_lossy()
-                )
-                .as_str(),
-            )
-            .await?;
-        return anyhow::Ok(r.get::<i32, _>(0) as usize);
-    }
+        // Send Job Over
+        self.queue(job).await?;
 
-    async fn get_or_create_spans(
-        pool: &Pool<Postgres>,
-        path_id: usize,
-        data: Vec<(usize, usize, Vec<u8>, &Embedding)>,
-    ) -> anyhow::Result<()> {
-        for row in data {
-            sqlx::query("INSERT INTO span (file_id, start_byte, end_byte, sha, embedding) VALUES ($1, $2, $3, $4, $5)").bind(path_id as i32).bind(row.0 as i32).bind(row.1 as i32).bind(row.2).bind(row.3).execute(pool).await?;
-        }
-
-        anyhow::Ok(())
-    }
-
-    pub(crate) async fn get_or_create_directory(&self, path: &PathBuf) -> anyhow::Result<usize> {
-        let pool = self.pool.clone();
-        let path_str = path.as_path().to_string_lossy();
-
-        // Identify if the directory already exists
-
-        let account_id =
-            sqlx::query(format!("SELECT id FROM directory WHERE path = '{}'", path_str).as_str())
-                .fetch_one(&pool)
-                .await;
-
-        match account_id {
-            Ok(account_id) => {
-                return anyhow::Ok(account_id.get::<i32, _>(0) as usize);
-            }
-            Err(_) => {
-                let r = self
-                    .get_conn()
-                    .await?
-                    .fetch_one(
-                        format!(
-                            "INSERT INTO directory (path) VALUES ('{}') RETURNING id",
-                            path_str
-                        )
-                        .as_str(),
-                    )
-                    .await?;
-                return anyhow::Ok(r.get::<i32, _>(0) as usize);
-            }
-        }
-    }
-
-    pub(crate) async fn get_top_neighbours(
-        &self,
-        directory: PathBuf,
-        embedding: &Embedding,
-        n: usize,
-    ) -> anyhow::Result<Vec<SearchResult>> {
-        let pool = self.pool.clone();
-        let vector = Vector::from(embedding.clone());
-        let rows = sqlx::query(
-            "SELECT span.id, file.path, span.start_byte, span.end_byte FROM span LEFT JOIN file ON span.file_id = file.id LEFT JOIN directory on file.directory_id = directory.id WHERE directory.path = $1 ORDER BY embedding <-> $2 LIMIT $3",
-        )
-        .bind(directory.as_path().to_string_lossy())
-        .bind(vector)
-        .bind(n as i32)
-        .fetch_all(&pool)
-        .await?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            let id = row.try_get::<i32, _>(0)? as usize;
-            let path = PathBuf::from(row.try_get::<String, _>(1)?);
-            let start_byte = row.try_get::<i32, _>(2)? as usize;
-            let end_byte = row.try_get::<i32, _>(3)? as usize;
-
-            results.push(SearchResult {
-                id,
-                path,
-                start_byte,
-                end_byte,
-            })
-        }
-
-        anyhow::Ok(results)
+        receiver.await?
     }
 
     pub(crate) async fn queue(&self, database_job: DatabaseJob) -> anyhow::Result<()> {
@@ -287,18 +214,344 @@ impl VectorDatabase {
         &self,
         path: &PathBuf,
     ) -> anyhow::Result<HashMap<Vec<u8>, Embedding>> {
-        let pool = self.pool.clone();
-        let rows = sqlx::query(
-            "SELECT span.sha, span.embedding FROM span LEFT JOIN file ON span.file_id = file.id LEFT JOIN directory ON file.directory_id = directory.id WHERE directory.path = $1"
-        ).bind(path.as_path().to_string_lossy()).fetch_all(&pool).await?;
+        let (sender, receiver) = oneshot::channel::<anyhow::Result<HashMap<Vec<u8>, Embedding>>>();
+        let job = DatabaseJob::GetEmbeddingsForDirectory {
+            path: path.clone(),
+            sender,
+        };
 
-        let mut embeddings = HashMap::new();
-        for row in rows {
-            let digest = row.try_get::<Vec<u8>, _>(0)?;
-            let embedding = row.try_get::<Vec<f32>, _>(0)?;
-            embeddings.insert(digest, embedding);
+        self.queue(job).await?;
+        receiver.await?
+    }
+
+    pub(crate) async fn get_top_neighbours(
+        &self,
+        directory: PathBuf,
+        embedding: &Embedding,
+        n: usize,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        let (sender, receiver) = oneshot::channel::<anyhow::Result<Vec<SearchResult>>>();
+        let job = DatabaseJob::SearchDirectory {
+            path: directory,
+            embedding: embedding.clone(),
+            n,
+            sender,
+        };
+
+        self.queue(job).await?;
+        receiver.await?
+    }
+
+    pub(crate) async fn create_file_and_spans(
+        &self,
+        context: Arc<Mutex<FileContext>>,
+    ) -> anyhow::Result<()> {
+        let (sender, receiver) = oneshot::channel::<anyhow::Result<()>>();
+        let job = DatabaseJob::CreateFileAndSpans { context, sender };
+        self.queue(job).await?;
+        receiver.await?
+    }
+}
+
+async fn get_embeddings_for_directory(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    path: &PathBuf,
+) -> anyhow::Result<HashMap<Vec<u8>, Embedding>> {
+    let mut resp = db.query(format!("SELECT sha, embedding FROM span WHERE <-contains<-file<-owns<-(directory WHERE path = '{}')", path.to_string_lossy())).await?;
+
+    let rows: Vec<EmbeddingBySha> = resp.take(0)?;
+    let mut map = HashMap::<Vec<u8>, Embedding>::new();
+    for row in rows {
+        map.insert(row.sha, row.embedding);
+    }
+
+    dbg!(&map);
+
+    anyhow::Ok(map)
+}
+
+async fn get_or_create_directory(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    path: &PathBuf,
+) -> anyhow::Result<String> {
+    if let Ok(mut paths) = db
+        .query("SELECT id FROM directory WHERE path = $path")
+        .bind(("path", path.clone()))
+        .await
+    {
+        let id: Vec<Thing> = paths.take("id").unwrap();
+        if id.len() == 1 {
+            return anyhow::Ok(id[0].id.to_raw());
+        } else {
+            let row: Vec<Record> = db
+                .create("directory")
+                .content(Directory { path: path.clone() })
+                .await?;
+
+            if let Some(id) = row.get(0) {
+                return anyhow::Ok(id.id.id.to_raw());
+            }
         }
+    }
+    Err(anyhow!(anyhow!("failed to get or create directory")))
+}
 
-        anyhow::Ok(embeddings)
+async fn create_file(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    path: &PathBuf,
+    directory_id: String,
+) -> anyhow::Result<String> {
+    let row: Vec<Record> = db
+        .create("file")
+        .content(File { path: path.clone() })
+        .await?;
+
+    let file_id = row.get(0).ok_or(anyhow!("row not created"))?.id.id.to_raw();
+    let query = format!(
+        "RELATE directory:{}->owns->file:{}",
+        directory_id,
+        file_id.clone()
+    );
+    let result = db.query(query).await?;
+    result.check()?;
+
+    anyhow::Ok(file_id)
+}
+
+async fn create_span(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    span: Span,
+    file_id: String,
+) -> anyhow::Result<()> {
+    let result: Vec<Record> = db.create("span").content(&span).await?;
+
+    let id = result
+        .get(0)
+        .ok_or(anyhow!("span not created"))?
+        .id
+        .id
+        .to_raw();
+
+    debug_assert!({
+        let result: Vec<Span> = db.select("span").range(&id..).await.unwrap();
+        assert_eq!(
+            result.get(0).unwrap(),
+            &span,
+            "span written and provided are different"
+        );
+        true
+    });
+
+    let query = format!("RELATE file:{}->contains->span:{}", file_id, id);
+    let result = db.query(query).await?;
+    result.check()?;
+
+    anyhow::Ok(())
+}
+
+async fn delete_file_and_spans(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    path: &PathBuf,
+) -> anyhow::Result<()> {
+    let query = format!(
+        "DELETE span WHERE <-contains<-(file WHERE path = '{}')",
+        path.to_string_lossy()
+    );
+    // Delete Spans
+    let query = format!("DELETE file WHERE path = '{}'", path.to_string_lossy());
+    let result = db.query(query).await?;
+    result.check()?;
+
+    // Delete Relations
+    let query = format!(
+        "DELETE contains WHERE in.path = '{}'",
+        path.to_string_lossy()
+    );
+    let result = db.query(query).await?;
+    result.check()?;
+
+    // Delete File
+    let query = format!("DELETE file WHERE path = '{}'", path.to_string_lossy());
+    let result = db.query(query).await?;
+    result.check()?;
+
+    anyhow::Ok(())
+}
+
+async fn create_file_and_spans(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    context: Arc<Mutex<FileContext>>,
+) -> anyhow::Result<()> {
+    let file_context = context.lock().await;
+    let path = file_context.details.path.clone();
+    let directory_id = file_context.details.directory_state.id.clone();
+
+    // Automatically overwriting everything currently
+    delete_file_and_spans(db, &path).await?;
+
+    // Convert to Proper Data
+    let mut data: Vec<Span> = Vec::new();
+    for (embedding, document) in file_context.embeddings.iter().zip(&file_context.documents) {
+        debug_assert!(
+            embedding.len() > 0,
+            "embedding length passed to creation is empty"
+        );
+        data.push(Span {
+            start_byte: document.start_byte,
+            end_byte: document.end_byte,
+            sha: document.sha.clone(),
+            embedding: embedding.clone(),
+        });
+    }
+
+    let file_id = create_file(db, &path, directory_id).await?;
+    for span in data {
+        create_span(db, span, file_id.clone()).await?;
+    }
+
+    anyhow::Ok(())
+}
+
+async fn search_directory(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    path: &PathBuf,
+    embedding: &Embedding,
+    n: usize,
+) -> anyhow::Result<Vec<SearchResult>> {
+    let query = format!(
+        "
+        SELECT id, array::first(<-contains<-file.path) as path, start_byte, end_byte, vector::similarity::cosine(embedding, $target) AS similarity
+        FROM span 
+        WHERE <-contains<-file<-owns<-(directory WHERE path = '{}')
+        ORDER BY similarity DESC LIMIT $limit",
+        path.to_string_lossy()
+    );
+
+    let mut response = db
+        .query(query)
+        .bind(("target", embedding))
+        .bind(("limit", n))
+        .await?;
+
+    let results: Vec<SearchResult> = response.take(0)?;
+
+    anyhow::Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parsing::ContextDocument;
+    use crate::semantic_index::{DirectoryState, FileDetails};
+
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_create_spans() {
+        let tmp_dir = tempdir().unwrap();
+        let tmp_path = PathBuf::from(tmp_dir.path());
+        let db = VectorDatabase::initialize(tmp_path).await.unwrap();
+
+        let directory_state = Arc::new(DirectoryState::new("id0".to_string()));
+        directory_state.new_job();
+
+        let test_file = Arc::new(Mutex::new(FileContext {
+            details: FileDetails {
+                path: PathBuf::from("/tmp/foo"),
+                directory_state,
+            },
+            documents: vec![ContextDocument {
+                start_byte: 0,
+                end_byte: 10,
+                sha: vec![1, 2, 3],
+                content: "this is a test document".to_string(),
+            }],
+            embeddings: vec![vec![0.1, 0.2, 0.3]],
+        }));
+
+        let result = db.create_file_and_spans(test_file).await;
+        result.unwrap();
+    }
+
+    async fn _test_create_spans_and_search() {
+        let tmp_dir = tempdir().unwrap();
+        let tmp_path = PathBuf::from(tmp_dir.path());
+        let db = VectorDatabase::initialize(tmp_path).await.unwrap();
+
+        let directory_path = PathBuf::from("/tmp");
+        let directory_id = db.get_or_create_directory(&directory_path).await.unwrap();
+
+        let directory_state = Arc::new(DirectoryState::new(directory_id));
+        directory_state.new_job();
+
+        let test_file = Arc::new(Mutex::new(FileContext {
+            details: FileDetails {
+                path: PathBuf::from("/tmp/foo"),
+                directory_state: directory_state.clone(),
+            },
+            documents: vec![
+                ContextDocument {
+                    start_byte: 0,
+                    end_byte: 10,
+                    sha: vec![1, 2, 3],
+                    content: "this is a test document".to_string(),
+                },
+                ContextDocument {
+                    start_byte: 1,
+                    end_byte: 12,
+                    sha: vec![4, 5, 6],
+                    content: "this is a second test document".to_string(),
+                },
+            ],
+            embeddings: vec![vec![0.1, 0.2, 0.3], vec![0.9, 0.9, 0.1]],
+        }));
+
+        let result = db.create_file_and_spans(test_file).await;
+        result.unwrap();
+
+        let test_file2 = Arc::new(Mutex::new(FileContext {
+            details: FileDetails {
+                path: PathBuf::from("/tmp/foo2"),
+                directory_state: directory_state.clone(),
+            },
+            documents: vec![ContextDocument {
+                start_byte: 1,
+                end_byte: 12,
+                sha: vec![4, 5, 6],
+                content: "this is a second test document".to_string(),
+            }],
+            embeddings: vec![vec![0.5, 0.2, 0.3]],
+        }));
+
+        directory_state.new_job();
+        let result = db.create_file_and_spans(test_file2).await;
+        result.unwrap();
+
+        let search_results = db
+            .get_top_neighbours(directory_path, &vec![0.8, 0.9, 0.2], 1)
+            .await
+            .unwrap();
+
+        assert_eq!(search_results[0].path, PathBuf::from("/tmp/foo"));
+        assert_eq!(search_results[0].start_byte, 1);
+        assert_eq!(search_results[0].end_byte, 12);
+    }
+
+    #[test]
+    fn test_create_spans_and_search() {
+        // This hack is here because of the following issue with surrealdb
+        // https://github.com/surrealdb/surrealdb/issues/2920
+        let stack_size = 10 * 1024 * 1024;
+
+        // Stack frames are generally larger in debug mode.
+        #[cfg(debug_assertions)]
+        let stack_size = stack_size * 2;
+
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_stack_size(stack_size)
+            .build()
+            .unwrap()
+            .block_on(_test_create_spans_and_search())
     }
 }
