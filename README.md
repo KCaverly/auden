@@ -1,5 +1,7 @@
 # auden
 
+![](logo.png)
+
 *yet another retrieval server*  
 *lsp but for retrieval*  
 
