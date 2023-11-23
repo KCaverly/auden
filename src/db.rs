@@ -110,7 +110,7 @@ pub(crate) struct VectorDatabase {
 
 impl VectorDatabase {
     pub(crate) async fn initialize(database_dir: PathBuf) -> anyhow::Result<Self> {
-        const DATABASE_NAME: &str = "yars";
+        const DATABASE_NAME: &str = "auden";
 
         let (executor, mut receiver) = mpsc::channel::<DatabaseJob>(1000);
         tokio::spawn({

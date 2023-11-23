@@ -2,44 +2,44 @@ use anyhow::anyhow;
 use homedir::get_my_home;
 use tonic::{transport::Server, Request, Response, Status};
 
+use auden::embedding::DummyEmbeddingProvider;
+use auden::semantic_index::IndexingStatus;
+use auden::semantic_index::SemanticIndex;
+use auden_grpc::auden_server::{Auden, AudenServer};
+use auden_grpc::{
+    IndexReply, IndexRequest, SearchReply, SearchRequest, SearchResultReply, StatusReply,
+    StatusRequest,
+};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use yars::embedding::DummyEmbeddingProvider;
-use yars::semantic_index::IndexingStatus;
-use yars::semantic_index::SemanticIndex;
-use yars_grpc::yars_server::{Yars, YarsServer};
-use yars_grpc::{
-    IndexReply, IndexRequest, SearchReply, SearchRequest, SearchResultReply, StatusReply,
-    StatusRequest,
-};
 
-pub mod yars_grpc {
-    tonic::include_proto!("yars_grpc");
+pub mod auden_grpc {
+    tonic::include_proto!("auden_grpc");
 }
 
-pub struct YarsAgent {
+pub struct AudenAgent {
     index: Arc<Mutex<SemanticIndex>>,
 }
 
-impl YarsAgent {
+impl AudenAgent {
     pub async fn new() -> anyhow::Result<Self> {
         let database_dir = get_my_home()?
             .ok_or(anyhow!("cant find home directory"))?
             .as_path()
-            .join(".yars")
+            .join(".auden")
             .join("db");
 
         let index = Arc::new(Mutex::new(
             SemanticIndex::new(database_dir, Arc::new(DummyEmbeddingProvider {})).await?,
         ));
-        anyhow::Ok(YarsAgent { index })
+        anyhow::Ok(AudenAgent { index })
     }
 }
 
 #[tonic::async_trait]
-impl Yars for YarsAgent {
+impl Auden for AudenAgent {
     async fn index_directory(
         &self,
         request: Request<IndexRequest>,
@@ -145,9 +145,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .unwrap()
         .block_on(async {
-            if let Some(agent) = YarsAgent::new().await.ok() {
+            if let Some(agent) = AudenAgent::new().await.ok() {
                 let _ = Server::builder()
-                    .add_service(YarsServer::new(agent))
+                    .add_service(AudenServer::new(agent))
                     .serve(addr)
                     .await;
             }

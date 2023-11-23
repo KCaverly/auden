@@ -2,8 +2,7 @@ use crate::embedding::{Embedding, EmbeddingProvider};
 use crate::parsing::FileContext;
 use std::mem;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 pub(crate) enum EmbeddingJob {
     Embed {

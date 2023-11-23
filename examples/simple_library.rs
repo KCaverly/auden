@@ -1,21 +1,21 @@
-use std::fs;
+use auden::semantic_index::SemanticIndex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use yars::semantic_index::SemanticIndex;
+use tempfile::tempdir;
 
-use yars::embedding::DummyEmbeddingProvider;
+use auden::embedding::DummyEmbeddingProvider;
 
 async fn run_example() {
     simple_logger::init_with_env().unwrap();
 
-    let directory = "/home/kcaverly/personal/yars";
+    let tmp_dir = tempdir().unwrap();
+    let tmp_path = PathBuf::from(tmp_dir.path());
 
-    if let Some(mut index) = SemanticIndex::new(
-        fs::canonicalize(PathBuf::from("data/db")).unwrap(),
-        Arc::new(DummyEmbeddingProvider {}),
-    )
-    .await
-    .ok()
+    let directory = "/home/kcaverly/personal/auden";
+
+    if let Some(mut index) = SemanticIndex::new(tmp_path, Arc::new(DummyEmbeddingProvider {}))
+        .await
+        .ok()
     {
         if let Some(indexing) = index.index_directory(PathBuf::from(directory)).await.ok() {
             indexing.notified().await;
