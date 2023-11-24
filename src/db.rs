@@ -1,4 +1,4 @@
-use crate::parsing::FileContext;
+use crate::parsers::strategy::FileContext;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -501,7 +501,7 @@ async fn search_directory(
 
 #[cfg(test)]
 mod tests {
-    use crate::parsing::ContextDocument;
+    use crate::parsers::strategy::ContextDocument;
     use crate::semantic_index::{DirectoryState, FileDetails};
 
     use super::*;

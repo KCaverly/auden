@@ -1,4 +1,4 @@
-use crate::parsing::FileContext;
+use crate::parsers::strategy::FileContext;
 use anyhow::anyhow;
 use llm_chain::traits::Embeddings;
 use std::mem;

@@ -1,7 +1,7 @@
 use crate::db::{SearchResult, VectorDatabase};
 use crate::embedding_queue::{EmbeddingJob, EmbeddingQueue};
-use crate::languages::{load_languages, LanguageConfig, LanguageRegistry};
-use crate::parsing::FileContextParser;
+use crate::parsers::registry::{load_extensions, ExtensionRegistry};
+use crate::parsers::strategy::{parse_file, ParsingStrategy};
 use anyhow::anyhow;
 use llm_chain::traits::Embeddings;
 use std::collections::HashMap;
@@ -91,8 +91,14 @@ impl IndexingStatus {
 
 pub struct SemanticIndex {
     vector_db: VectorDatabase,
-    languages: LanguageRegistry,
-    parse_sender: mpsc::Sender<Arc<(FileDetails, LanguageConfig, Arc<HashMap<Vec<u8>, Vec<f32>>>)>>,
+    parsers: ExtensionRegistry,
+    parse_sender: mpsc::Sender<
+        Arc<(
+            FileDetails,
+            ParsingStrategy,
+            Arc<HashMap<Vec<u8>, Vec<f32>>>,
+        )>,
+    >,
     directory_state: HashMap<PathBuf, Arc<DirectoryState>>,
     embedding_provider: Arc<llm_chain_openai::embeddings::Embeddings>,
 }
@@ -105,13 +111,15 @@ impl SemanticIndex {
 
         // Create a long-lived background task, which parses files
         let (parse_sender, mut parse_receiver) = mpsc::channel::<
-            Arc<(FileDetails, LanguageConfig, Arc<HashMap<Vec<u8>, Vec<f32>>>)>,
+            Arc<(
+                FileDetails,
+                ParsingStrategy,
+                Arc<HashMap<Vec<u8>, Vec<f32>>>,
+            )>,
         >(10000);
         tokio::spawn(async move {
             while let Some(file_to_parse) = parse_receiver.recv().await {
-                if let Ok(mut context) =
-                    FileContextParser::parse_file(&file_to_parse.0, &file_to_parse.1)
-                {
+                if let Ok(mut context) = parse_file(file_to_parse.0.clone(), &file_to_parse.1) {
                     context.details.directory_state.new_job();
 
                     // Update embeddings if the shas are already available
@@ -174,10 +182,10 @@ impl SemanticIndex {
             }
         });
 
-        let languages = load_languages();
+        let parsers = load_extensions();
         anyhow::Ok(SemanticIndex {
             vector_db,
-            languages,
+            parsers,
             parse_sender,
             directory_state: HashMap::new(),
             embedding_provider,
@@ -216,7 +224,11 @@ impl SemanticIndex {
                     if let Some(extension) =
                         path.extension().and_then(|extension| extension.to_str())
                     {
-                        if let Some(config) = self.languages.get_config_from_extension(extension) {
+                        if let Some(strategy) = self
+                            .parsers
+                            .get_strategy_for_extension(extension.to_string())
+                            .ok()
+                        {
                             existing_paths.remove(&path.to_path_buf());
 
                             let file_details = FileDetails {
@@ -226,12 +238,32 @@ impl SemanticIndex {
                             self.parse_sender
                                 .send(Arc::new((
                                     file_details,
-                                    config.clone(),
+                                    strategy.clone(),
                                     existing_embeddings.clone(),
                                 )))
                                 .await?;
                         }
                     }
+
+                    // if let Some(extension) =
+                    //     path.extension().and_then(|extension| extension.to_str())
+                    // {
+                    //     if let Some(config) = self.languages.get_config_from_extension(extension) {
+                    //         existing_paths.remove(&path.to_path_buf());
+                    //
+                    //         let file_details = FileDetails {
+                    //             path: path.to_path_buf(),
+                    //             directory_state: directory_state.clone(),
+                    //         };
+                    //         self.parse_sender
+                    //             .send(Arc::new((
+                    //                 file_details,
+                    //                 config.clone(),
+                    //                 existing_embeddings.clone(),
+                    //             )))
+                    //             .await?;
+                    //     }
+                    // }
                 }
             }
         }

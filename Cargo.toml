@@ -31,6 +31,7 @@ serde = { version = "1.0.192", features = ["derive"] }
 homedir = "0.2.1"
 llm-chain = "0.12.0"
 llm-chain-openai = "0.12.0"
+indoc = "2.0.4"
 
 [dev-dependencies]
 tempfile = "*"
