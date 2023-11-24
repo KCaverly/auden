@@ -4,7 +4,7 @@
   <img src="logo.png" width="600"/>
 </p>
 
-<p align="center"><i>yet another retrieval server</i></p>
+<p align="center"><i>yet another retrieval engine</i></p>
 
 ## Embedded Engine for On-Device Retrieval Applications
 
