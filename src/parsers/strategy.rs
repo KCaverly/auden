@@ -1,6 +1,5 @@
 use anyhow::anyhow;
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::path::PathBuf;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
@@ -100,11 +99,11 @@ impl Drop for FileContext {
         self.details.directory_state.job_dropped();
     }
 }
-pub(crate) fn parse_file(
+pub(crate) async fn parse_file(
     details: FileDetails,
     strategy: &ParsingStrategy,
 ) -> anyhow::Result<FileContext> {
-    let content = fs::read_to_string(&details.path)?;
+    let content = tokio::fs::read_to_string(&details.path).await?;
 
     let documents = parse_content(&details.path, content.as_str(), strategy)?;
     let embeddings = documents.iter().map(|_| vec![]).collect::<Vec<Vec<f32>>>();
