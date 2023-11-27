@@ -21,7 +21,7 @@ struct FileFragment {
 #[derive(Clone)]
 pub(crate) struct EmbeddingQueue {
     queue: Vec<FileFragment>,
-    embed_tx: mpsc::Sender<Vec<FileFragment>>,
+    embed_tx: async_channel::Sender<Vec<FileFragment>>,
     finished_files_tx: broadcast::Sender<Arc<Mutex<FileContext>>>,
 }
 
@@ -29,47 +29,53 @@ impl EmbeddingQueue {
     pub(crate) fn new(provider: Arc<llm_chain_openai::embeddings::Embeddings>) -> Self {
         let (finished_files_tx, _) = broadcast::channel::<Arc<Mutex<FileContext>>>(10000);
         // Create a long lived task to embed and send off completed files
-        let (embed_tx, mut receiver) = mpsc::channel::<Vec<FileFragment>>(10000);
-        tokio::spawn({
-            let finished_files_tx = finished_files_tx.clone();
-            async move {
-                // get spans and embed them
-                while let Some(queue) = receiver.recv().await {
-                    let mut spans = Vec::new();
-                    for fragment in &queue {
-                        let unlocked = fragment.file_context.lock().await;
-                        for idx in &fragment.embeddable_ids {
-                            spans.push(unlocked.documents[*idx].content.clone());
-                        }
-                    }
-
-                    let embeddings = provider.embed_texts(spans).await;
-
-                    match embeddings {
-                        Ok(embeddings) => {
-                            // Update File Context with Completed Embeddings
-                            let mut i = 0;
-                            for fragment in &queue {
-                                let mut unlocked = fragment.file_context.lock().await;
-                                for idx in &fragment.embeddable_ids {
-                                    unlocked.embeddings[*idx] = embeddings[i].clone();
-                                }
-                                i += 1;
-
-                                let complete = unlocked.complete();
-                                drop(unlocked);
-                                if complete {
-                                    let _ = finished_files_tx.send(fragment.file_context.clone());
-                                }
+        let (embed_tx, receiver) = async_channel::unbounded::<Vec<FileFragment>>();
+        // let (embed_tx, mut receiver) = mpsc::channel::<Vec<FileFragment>>(10000);
+        for _ in 0..num_cpus::get() {
+            tokio::spawn({
+                let finished_files_tx = finished_files_tx.clone();
+                let receiver = receiver.clone();
+                let provider = provider.clone();
+                async move {
+                    // get spans and embed them
+                    while let Some(queue) = receiver.recv().await.ok() {
+                        let mut spans = Vec::new();
+                        for fragment in &queue {
+                            let unlocked = fragment.file_context.lock().await;
+                            for idx in &fragment.embeddable_ids {
+                                spans.push(unlocked.documents[*idx].content.clone());
                             }
                         }
-                        Err(err) => {
-                            log::error!("{:?}", anyhow!(err));
+
+                        let embeddings = provider.embed_texts(spans).await;
+
+                        match embeddings {
+                            Ok(embeddings) => {
+                                // Update File Context with Completed Embeddings
+                                let mut i = 0;
+                                for fragment in &queue {
+                                    let mut unlocked = fragment.file_context.lock().await;
+                                    for idx in &fragment.embeddable_ids {
+                                        unlocked.embeddings[*idx] = embeddings[i].clone();
+                                    }
+                                    i += 1;
+
+                                    let complete = unlocked.complete();
+                                    drop(unlocked);
+                                    if complete {
+                                        let _ =
+                                            finished_files_tx.send(fragment.file_context.clone());
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                log::error!("{:?}", anyhow!(err));
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
+        }
 
         EmbeddingQueue {
             queue: Vec::new(),
@@ -109,7 +115,7 @@ impl EmbeddingQueue {
                     size += 1;
                     embeddable_ids.push(idx);
 
-                    if size == 10 {
+                    if size == 20 {
                         let fragment_ids = mem::take(&mut embeddable_ids);
                         self.queue.push(FileFragment {
                             file_context: file_context.clone(),
